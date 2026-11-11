@@ -44,7 +44,7 @@ jobs:
           git config user.email "github-actions@users.noreply.github.com"
           git checkout --orphan apk-build
           git rm -rf . > /dev/null
-          rm -rf ./* .gradle 2>/dev/null || true
+          rm -rf ./* .gradle .kotlin 2>/dev/null || true
           cp /tmp/out/* .
           git add -A
           git commit -m "Build output for ${GITHUB_SHA}"

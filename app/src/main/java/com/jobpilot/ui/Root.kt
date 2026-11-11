@@ -36,6 +36,7 @@ import com.jobpilot.data.AppData
 import com.jobpilot.data.EmailStatus
 import com.jobpilot.data.JobStatus
 import com.jobpilot.data.Stage
+import kotlinx.coroutines.launch
 
 @Composable
 fun AppRoot(vm: AppViewModel, webView: WebView) {
@@ -45,11 +46,17 @@ fun AppRoot(vm: AppViewModel, webView: WebView) {
     val showSettings by vm.showSettings.collectAsState()
     val report by vm.reportFile.collectAsState()
     val busy by vm.busy.collectAsState()
-    val toast by vm.toast.collectAsState()
     val snack = remember { SnackbarHostState() }
 
-    LaunchedEffect(toast) {
-        toast?.let { vm.toastShown(); snack.showSnackbar(it) }
+    // A new message replaces whatever is showing; clearing the state lets the same text show twice.
+    LaunchedEffect(Unit) {
+        vm.toast.collect { msg ->
+            if (msg != null) {
+                vm.toastShown()
+                snack.currentSnackbarData?.dismiss()
+                launch { snack.showSnackbar(msg) }
+            }
+        }
     }
 
     // Full-screen pages on top of the tabs
