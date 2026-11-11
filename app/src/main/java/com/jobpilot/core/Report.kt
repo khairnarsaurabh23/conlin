@@ -1,10 +1,11 @@
 package com.jobpilot.core
 
 import com.jobpilot.data.AppData
-import com.jobpilot.data.ContactStatus
 import com.jobpilot.data.EmailStatus
 import com.jobpilot.data.Job
 import com.jobpilot.data.JobStatus
+import com.jobpilot.data.ReplyKind
+import com.jobpilot.data.Stage
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -16,30 +17,19 @@ object Report {
     private val dateFmt = SimpleDateFormat("d MMM yyyy, HH:mm", Locale.getDefault())
     private val dayFmt = SimpleDateFormat("d MMM", Locale.getDefault())
     private fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
-    private fun d(ms: Long) = if (ms <= 0) "—" else dayFmt.format(Date(ms))
+    private fun d(ms: Long) = if (ms <= 0) "-" else dayFmt.format(Date(ms))
+    private fun pct(v: Int?) = if (v == null) "-" else "$v%"
 
     fun html(data: AppData): String {
         val now = System.currentTimeMillis()
         val day = TimeUnit.DAYS.toMillis(1)
         val jobs = data.jobs
         val p = data.profile
-        val new24 = jobs.count { now - it.foundAt < day }
-        val new7 = jobs.count { now - it.foundAt < 7 * day }
+        val ins = Insights.of(data, now)
+        val usage = Guard.inviteUsage(data, now)
         val active = jobs.filter { it.status != JobStatus.IGNORED && it.status != JobStatus.REJECTED }
-        val avg = if (active.isEmpty()) 0 else active.sumOf { it.matchScore } / active.size
-        val strong = active.count { it.matchScore >= 70 }
-        val contacted = data.contacts.count { it.status != ContactStatus.TO_CONTACT }
-        val replied = data.contacts.count { it.status == ContactStatus.REPLIED || it.status == ContactStatus.REFERRED }
-        val referred = data.contacts.count { it.status == ContactStatus.REFERRED }
-        val sent = data.emails.count { it.status == EmailStatus.SENT }
-        val pendingEmails = data.emails.count { it.status == EmailStatus.DRAFT || it.status == EmailStatus.APPROVED }
-        val followUps = data.contacts.filter {
-            it.status == ContactStatus.CONTACTED && it.contactedAt > 0 &&
-                now - it.contactedAt > TimeUnit.DAYS.toMillis(p.followUpDays.toLong())
-        }
         val jobByKey = jobs.associateBy { it.key }
-
-        // Skill gaps among the best-matching jobs
+        val followUps = data.contacts.filter { it.stage == Stage.ASKED && now - it.askedAt > TimeUnit.DAYS.toMillis(p.followUpDays.toLong()) }
         val top = active.filter { it.detailsFetched }.sortedByDescending { it.matchScore }.take(30)
         val gaps = top.flatMap { it.missingSkills }.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(8)
         val companies = active.groupingBy { it.company }.eachCount().entries.sortedByDescending { it.value }.take(10)
@@ -48,91 +38,108 @@ object Report {
         sb.append(
             """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>JobPilot report</title><style>
-body{font-family:-apple-system,Roboto,Segoe UI,sans-serif;margin:0;padding:16px;color:#1b1f24;background:#f4f6f8;line-height:1.4}
-h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:24px 0 8px;color:#0a66c2}
-.sub{color:#5b6570;font-size:13px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:12px}
-.card{background:#fff;border-radius:10px;padding:12px;box-shadow:0 1px 2px rgba(0,0,0,.06)}
-.n{font-size:24px;font-weight:700}.l{font-size:12px;color:#5b6570}
-table{width:100%;border-collapse:collapse;background:#fff;border-radius:10px;overflow:hidden;font-size:13px}
-th,td{padding:8px;text-align:left;border-bottom:1px solid #eef0f2;vertical-align:top}th{background:#eef3f8;font-weight:600}
-a{color:#0a66c2;text-decoration:none}.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:#eef3f8}
-.hi{background:#dff3e4}.mid{background:#fff4d6}.lo{background:#fde7e7}.muted{color:#8a949e}
+body{font-family:Roboto,-apple-system,Segoe UI,sans-serif;margin:0;padding:18px;color:#1f1e1c;background:#faf9f6;line-height:1.45;font-size:14px}
+h1{font-family:Georgia,serif;font-weight:500;font-size:24px;margin:0 0 2px}
+h2{font-family:Georgia,serif;font-weight:500;font-size:17px;margin:28px 0 8px}
+.sub{color:#6b6a66;font-size:12.5px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:7px 6px;text-align:left;border-bottom:1px solid #e4e2dc;vertical-align:top}
+th{font-weight:500;color:#6b6a66;font-size:12px}
+td.n,th.n{text-align:right;white-space:nowrap}
+a{color:#2f5d50;text-decoration:none}.muted{color:#6b6a66}
+.kv td:first-child{color:#6b6a66}.kv td:last-child{text-align:right;font-variant-numeric:tabular-nums}
 </style></head><body>"""
         )
-        sb.append("<h1>JobPilot report</h1><div class='sub'>${esc(p.name.ifBlank { "Your" })} job search · generated ${dateFmt.format(Date(now))}</div>")
+        sb.append("<h1>Job search report</h1><div class='sub'>${esc(p.name.ifBlank { "JobPilot" })} · ${dateFmt.format(Date(now))}</div>")
 
-        sb.append("<div class='grid'>")
-        fun stat(n: Any, l: String) = sb.append("<div class='card'><div class='n'>$n</div><div class='l'>$l</div></div>")
-        stat(jobs.size, "jobs tracked"); stat(new24, "new in last 24h"); stat(new7, "new this week")
-        stat(strong, "strong matches (70+)"); stat("$avg%", "average match")
-        stat(jobs.count { it.status == JobStatus.APPLIED }, "applied")
-        stat("$contacted/${data.contacts.size}", "people contacted"); stat(replied, "replies"); stat(referred, "referrals")
-        stat(sent, "emails sent"); stat(pendingEmails, "emails awaiting review"); stat(followUps.size, "follow-ups due")
-        sb.append("</div>")
+        fun kv(title: String, rows: List<Pair<String, String>>) {
+            sb.append("<h2>$title</h2><table class='kv'>")
+            rows.forEach { sb.append("<tr><td>${it.first}</td><td>${it.second}</td></tr>") }
+            sb.append("</table>")
+        }
+        kv("Jobs", listOf(
+            "Found" to "${ins.jobsFound}", "New in the last 24 hours" to "${jobs.count { now - it.foundAt < day }}",
+            "New this week" to "${jobs.count { now - it.foundAt < 7 * day }}", "Kept" to "${ins.jobsKept}",
+            "Strong matches (70%+)" to "${active.count { it.matchScore >= 70 }}", "Applied" to "${ins.applied}",
+            "Interviews" to "${ins.interviews}", "Rejected" to "${ins.rejected}",
+        ))
+        kv("Referral outreach", listOf(
+            "People suggested" to "${ins.suggested}", "Invites sent" to "${ins.invited}",
+            "Accepted" to "${ins.accepted} (${pct(ins.acceptanceRate)})", "Referral asks sent" to "${ins.asked}",
+            "Replies" to "${ins.replied} (${pct(ins.askReplyRate)})", "Referrals" to "${ins.referred}",
+            "Invites in the last 7 days" to "${usage.week} of ${usage.limits.week}", "Follow-ups due" to "${followUps.size}",
+        ))
+        kv("Recruiter emails", listOf(
+            "Sent" to "${ins.emailsSent}", "Replies" to "${ins.emailReplies} (${pct(ins.emailReplyRate)})",
+            "Interview replies" to "${ins.emailInterviews}", "Rejections" to "${ins.emailRejections}", "Bounced" to "${ins.bounced}",
+            "Median time to reply" to (ins.medianReplyHours?.let { if (it < 48) "$it h" else "${it / 24} days" } ?: "-"),
+            "Waiting for review" to "${data.emails.count { it.status == EmailStatus.DRAFT || it.status == EmailStatus.APPROVED }}",
+        ))
+        val tpl = ins.emailTemplates + ins.noteTemplates
+        if (tpl.any { it.sent > 0 }) {
+            sb.append("<h2>Templates</h2><table><tr><th>Template</th><th class='n'>Sent</th><th class='n'>Positive</th><th class='n'>Rate</th></tr>")
+            tpl.forEach { sb.append("<tr><td>${it.label}</td><td class='n'>${it.sent}</td><td class='n'>${it.positive}</td><td class='n'>${pct(it.rate)}</td></tr>") }
+            sb.append("</table>")
+        }
 
-        // Searches
-        sb.append("<h2>Your searches</h2><table><tr><th>Search</th><th>Jobs</th><th>Strong</th><th>Last 7 days</th></tr>")
+        sb.append("<h2>Searches</h2><table><tr><th>Search</th><th class='n'>Jobs</th><th class='n'>70%+</th><th class='n'>7 days</th></tr>")
         for (s in data.searches) {
             val js = jobs.filter { it.searchId == s.id }
-            sb.append("<tr><td>${esc(s.label())}<div class='muted'>${s.experience.label} · ${s.workType.label} · ${s.postedWithin.label}${if (!s.enabled) " · paused" else ""}</div></td>")
-            sb.append("<td>${js.size}</td><td>${js.count { it.matchScore >= 70 }}</td><td>${js.count { now - it.foundAt < 7 * day }}</td></tr>")
+            sb.append("<tr><td>${esc(s.label())}<div class='muted'>${s.experience.label}, ${s.workType.label}, ${s.postedWithin.label}${if (!s.enabled) ", paused" else ""}</div></td>")
+            sb.append("<td class='n'>${js.size}</td><td class='n'>${js.count { it.matchScore >= 70 }}</td><td class='n'>${js.count { now - it.foundAt < 7 * day }}</td></tr>")
         }
         sb.append("</table>")
 
-        // Top matches
-        sb.append("<h2>Top matches</h2><table><tr><th>Role</th><th>Match</th><th>Status</th></tr>")
+        sb.append("<h2>Top matches</h2><table><tr><th>Role</th><th class='n'>Match</th><th>Status</th></tr>")
         for (j in active.sortedWith(compareByDescending<Job> { it.matchScore }.thenByDescending { it.foundAt }).take(40)) {
-            val cls = when { j.matchScore >= 70 -> "hi"; j.matchScore >= 45 -> "mid"; else -> "lo" }
             sb.append("<tr><td><a href='${esc(j.url)}'>${esc(j.title)}</a><div>${esc(j.company)}</div><div class='muted'>${esc(j.location)} · ${esc(j.source)} · found ${d(j.foundAt)}</div>")
-            if (j.matchedSkills.isNotEmpty()) sb.append("<div class='muted'>✓ ${esc(j.matchedSkills.joinToString(", "))}</div>")
-            if (j.missingSkills.isNotEmpty() && j.detailsFetched) sb.append("<div class='muted'>✗ ${esc(j.missingSkills.take(5).joinToString(", "))}</div>")
-            sb.append("</td><td><span class='pill $cls'>${j.matchScore}%</span></td><td>${j.status.label}</td></tr>")
+            if (j.matchedSkills.isNotEmpty()) sb.append("<div class='muted'>Mentions: ${esc(j.matchedSkills.joinToString(", "))}</div>")
+            sb.append("</td><td class='n'>${j.matchScore}%</td><td>${j.status.label}</td></tr>")
         }
-        if (active.isEmpty()) sb.append("<tr><td colspan='3' class='muted'>No jobs yet — run a search.</td></tr>")
+        if (active.isEmpty()) sb.append("<tr><td colspan='3' class='muted'>No jobs yet.</td></tr>")
         sb.append("</table>")
 
-        // Referral pipeline
-        sb.append("<h2>Referral outreach</h2><table><tr><th>Person</th><th>For</th><th>Status</th></tr>")
-        for (c in data.contacts.sortedByDescending { maxOf(it.contactedAt, it.addedAt) }) {
+        sb.append("<h2>People</h2><table><tr><th>Person</th><th>For</th><th>Stage</th></tr>")
+        for (c in data.contacts.filter { it.stage != Stage.SKIPPED }.sortedByDescending { maxOf(it.askedAt, it.invitedAt, it.addedAt) }) {
             val j = jobByKey[c.jobKey]
             sb.append("<tr><td><a href='${esc(c.profileUrl)}'>${esc(c.name)}</a><div class='muted'>${esc(c.headline.take(90))}</div></td>")
             sb.append("<td>${esc(j?.title ?: c.company)}<div class='muted'>${esc(j?.company ?: "")}</div></td>")
-            sb.append("<td>${c.status.label}<div class='muted'>${if (c.contactedAt > 0) "contacted ${d(c.contactedAt)}" else c.kind.label}</div></td></tr>")
+            val whenText = when {
+                c.askedAt > 0 -> "asked ${d(c.askedAt)}"
+                c.connectedAt > 0 -> "connected ${d(c.connectedAt)}"
+                c.invitedAt > 0 -> "invited ${d(c.invitedAt)}"
+                else -> esc(c.why)
+            }
+            sb.append("<td>${c.stage.label}<div class='muted'>$whenText</div></td></tr>")
         }
-        if (data.contacts.isEmpty()) sb.append("<tr><td colspan='3' class='muted'>No people yet — use “Find referrers” on a job.</td></tr>")
+        if (data.contacts.isEmpty()) sb.append("<tr><td colspan='3' class='muted'>No people yet.</td></tr>")
         sb.append("</table>")
 
-        if (followUps.isNotEmpty()) {
-            sb.append("<h2>Follow-ups due</h2><table><tr><th>Person</th><th>Contacted</th></tr>")
-            followUps.forEach { sb.append("<tr><td><a href='${esc(it.profileUrl)}'>${esc(it.name)}</a> · ${esc(it.company)}</td><td>${d(it.contactedAt)}</td></tr>") }
-            sb.append("</table>")
-        }
-
-        // Emails
-        sb.append("<h2>Emails to recruiters</h2><table><tr><th>To</th><th>Role</th><th>Status</th></tr>")
+        sb.append("<h2>Emails</h2><table><tr><th>To</th><th>Role</th><th>Status</th></tr>")
         for (e in data.emails.sortedByDescending { maxOf(it.sentAt, it.createdAt) }) {
+            val status = if (e.reply != ReplyKind.NONE) e.reply.label else e.status.label
             sb.append("<tr><td>${esc(e.to)}<div class='muted'>${esc(e.company)}</div></td><td>${esc(e.role)}</td>")
-            sb.append("<td>${e.status.label}<div class='muted'>${if (e.sentAt > 0) "${d(e.sentAt)} via ${esc(e.via)}" else esc(e.error.take(60))}</div></td></tr>")
+            sb.append("<td>$status<div class='muted'>${if (e.sentAt > 0) "sent ${d(e.sentAt)}" else esc(e.error.take(60))}</div></td></tr>")
         }
-        if (data.emails.isEmpty()) sb.append("<tr><td colspan='3' class='muted'>No recruiter emails found yet.</td></tr>")
+        if (data.emails.isEmpty()) sb.append("<tr><td colspan='3' class='muted'>No recruiter emails yet.</td></tr>")
         sb.append("</table>")
 
         if (gaps.isNotEmpty()) {
-            sb.append("<h2>Skill gaps in your best matches</h2><table><tr><th>Skill you listed</th><th>Missing from # of top jobs</th></tr>")
-            gaps.forEach { sb.append("<tr><td>${esc(it.key)}</td><td>${it.value}</td></tr>") }
-            sb.append("</table><div class='sub'>These are skills on your profile that top jobs don't mention — consider leading with the ones that do.</div>")
+            sb.append("<h2>Your skills that top jobs rarely mention</h2><table><tr><th>Skill</th><th class='n'>Missing from</th></tr>")
+            gaps.forEach { sb.append("<tr><td>${esc(it.key)}</td><td class='n'>${it.value} of ${top.size}</td></tr>") }
+            sb.append("</table>")
         }
         if (companies.isNotEmpty()) {
-            sb.append("<h2>Companies hiring most</h2><table><tr><th>Company</th><th>Open roles</th></tr>")
-            companies.forEach { sb.append("<tr><td>${esc(it.key.ifBlank { "—" })}</td><td>${it.value}</td></tr>") }
+            sb.append("<h2>Companies with the most openings</h2><table><tr><th>Company</th><th class='n'>Roles</th></tr>")
+            companies.forEach { sb.append("<tr><td>${esc(it.key.ifBlank { "-" })}</td><td class='n'>${it.value}</td></tr>") }
             sb.append("</table>")
         }
 
-        sb.append("<h2>Recent runs</h2><table><tr><th>When</th><th>Seen</th><th>New</th><th>Emails</th><th>Notes</th></tr>")
+        sb.append("<h2>Recent checks</h2><table><tr><th>When</th><th class='n'>Seen</th><th class='n'>New</th><th>Notes</th></tr>")
         data.runs.take(10).forEach { r ->
-            sb.append("<tr><td>${dateFmt.format(Date(r.at))}</td><td>${r.jobsSeen}</td><td>${r.newJobs}</td><td>${r.newEmails}</td><td class='muted'>${esc(r.errors.joinToString("; ").take(160))}</td></tr>")
+            sb.append("<tr><td>${dateFmt.format(Date(r.at))}</td><td class='n'>${r.jobsSeen}</td><td class='n'>${r.newJobs}</td><td class='muted'>${esc(r.errors.joinToString("; ").take(160))}</td></tr>")
         }
-        sb.append("</table><p class='sub'>Generated by JobPilot on your phone.</p></body></html>")
+        sb.append("</table></body></html>")
         return sb.toString()
     }
 

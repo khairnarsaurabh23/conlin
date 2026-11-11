@@ -1,5 +1,3 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
-
 package com.jobpilot.ui
 
 import android.content.Context
@@ -7,20 +5,8 @@ import android.content.Intent
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -31,21 +17,13 @@ import java.io.File
 @Composable
 fun ReportScreen(vm: AppViewModel, file: File, snack: SnackbarHostState) {
     val ctx = LocalContext.current
-    Scaffold(
-        snackbarHost = { SnackbarHost(snack) },
-        topBar = {
-            TopAppBar(
-                title = { Text("Report") },
-                navigationIcon = { IconButton(onClick = { vm.closeReport() }) { Icon(Icons.Default.ArrowBack, "Back") } },
-                actions = {
-                    TextButton(onClick = { vm.exportCsv { shareFile(ctx, it, "text/csv") } }) { Text("CSV") }
-                    IconButton(onClick = { shareFile(ctx, file, "text/html") }) { Icon(Icons.Default.Share, "Share") }
-                }
-            )
+    Page(snack) {
+        Header("Report", onBack = { vm.closeReport() }) {
+            Quiet("CSV", { vm.exportCsv { shareFile(ctx, it, "text/csv") } })
+            Quiet("Share", { shareFile(ctx, file, "text/html") })
         }
-    ) { pad ->
         AndroidView(
-            modifier = Modifier.padding(pad).fillMaxSize(),
+            modifier = Modifier.weight(1f).fillMaxWidth(),
             factory = { c ->
                 WebView(c).apply {
                     webViewClient = object : WebViewClient() {

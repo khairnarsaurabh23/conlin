@@ -9,10 +9,15 @@ data class Profile(
     val email: String = "",
     val phone: String = "",
     val linkedinUrl: String = "",
-    /** Comma-separated skills, used for match scoring and in templates. */
+    /** Comma-separated skills, used for match scoring, tailoring and templates. */
     val skills: String = "",
     val yearsExperience: String = "",
-    val about: String = "",
+    val college: String = "",
+    /** Comma-separated previous employers, used to rank ex-colleagues first. */
+    val pastCompanies: String = "",
+    /** Free text used when building a tailored resume PDF. */
+    val experienceText: String = "",
+    val educationText: String = "",
     /** File name of the resume copied into app storage (empty = none). */
     val resumeFileName: String = "",
 
@@ -21,42 +26,64 @@ data class Profile(
     val useJSearch: Boolean = false,
     val jsearchApiKey: String = "",
 
-    // Email sending (optional SMTP; otherwise the Gmail app is used)
+    // Mail (Gmail app password is used for both sending and the read-only reply scan)
     val smtpHost: String = "smtp.gmail.com",
     val smtpPort: Int = 587,
+    val imapHost: String = "imap.gmail.com",
     val smtpUser: String = "",
     val smtpPassword: String = "",
-    val dailyEmailCap: Int = 25,
+    val dailyEmailCap: Int = 20,
+    val mailScanEnabled: Boolean = true,
 
-    // Templates
-    val referralTemplate: String = DEFAULT_REFERRAL,
-    val referralCharLimit: Int = 300,
-    val emailSubjectTemplate: String = DEFAULT_SUBJECT,
-    val emailBodyTemplate: String = DEFAULT_BODY,
+    // Templates. "B" variants are optional; when filled the app alternates and compares reply rates.
+    val noteTemplateA: String = DEFAULT_NOTE,
+    val noteTemplateB: String = "",
+    val noteCharLimit: Int = 200,
+    val askTemplate: String = DEFAULT_ASK,
+    val emailSubjectA: String = DEFAULT_SUBJECT,
+    val emailBodyA: String = DEFAULT_BODY,
+    val emailSubjectB: String = "",
+    val emailBodyB: String = "",
     val followUpDays: Int = 5,
+    val staleInviteDays: Int = 14,
+
+    // Account safety
+    val dailyInviteCap: Int = 15,
+    val weeklyInviteCap: Int = 60,
+    val dailyMessageCap: Int = 20,
+    val minGapMinutes: Int = 3,
+    val rampUp: Boolean = true,
+    /** true = profiles open in the LinkedIn app, false = in the built-in browser. */
+    val openInLinkedInApp: Boolean = true,
 
     // Background checks
     val autoCheckEnabled: Boolean = true,
     val autoCheckHours: Int = 12,
     val detailFetchLimit: Int = 15,
 ) {
-    fun skillList(): List<String> =
-        skills.split(",", ";", "\n").map { it.trim() }.filter { it.isNotEmpty() }
+    fun skillList(): List<String> = splitList(skills)
+    fun pastCompanyList(): List<String> = splitList(pastCompanies)
 
     val smtpConfigured: Boolean get() = smtpUser.isNotBlank() && smtpPassword.isNotBlank()
 
     companion object {
-        const val DEFAULT_REFERRAL =
-            "Hi {firstName}, I'm {myName}, {myHeadline}. I'm applying for the {role} role at {company} " +
-                "and my experience with {topSkills} is a strong fit. Would you be open to referring me? " +
-                "Happy to share my resume. Thanks!"
-        const val DEFAULT_SUBJECT = "Application for {role} – {myName}"
+        fun splitList(s: String): List<String> =
+            s.split(",", ";", "\n").map { it.trim() }.filter { it.isNotEmpty() }
+
+        const val DEFAULT_NOTE =
+            "Hi {firstName}, I came across the {role} opening at {company} and your profile. " +
+                "I work with {topSkills} and would like to connect."
+        const val DEFAULT_ASK =
+            "Hi {firstName}, thanks for connecting. I'm applying for the {role} role at {company}. " +
+                "I have {years} of experience with {topSkills}. If it looks like a reasonable fit, would you be open " +
+                "to referring me or pointing me to the right person? I can send my resume. Thanks either way.\n{myName}"
+        const val DEFAULT_SUBJECT = "Application for {role} - {myName}"
         const val DEFAULT_BODY =
             "Hi {firstName},\n\n" +
-                "I came across your post about openings at {company} and would like to be considered for the {role} position.\n\n" +
-                "I'm {myName}, {myHeadline}, with {years} of experience. My key skills include {skills}.\n\n" +
-                "I've attached my resume for your review. I'd be glad to talk about how I can contribute to your team.\n\n" +
-                "Thank you for your time,\n{myName}\n{myPhone}\n{myLinkedIn}"
+                "I saw your post about openings at {company} and would like to be considered for the {role} position.\n\n" +
+                "I'm {myName}, {myHeadline}, with {years} of experience. My main skills are {skills}.\n\n" +
+                "My resume is attached. I'd be glad to talk whenever suits you.\n\n" +
+                "Thanks,\n{myName}\n{myPhone}\n{myLinkedIn}"
     }
 }
 
@@ -98,19 +125,19 @@ data class SearchPref(
 ) {
     fun label(): String = buildString {
         append(keywords)
-        if (location.isNotBlank()) append(" · ").append(location)
+        if (location.isNotBlank()) append(", ").append(location)
     }
 }
 
 @Serializable
 enum class JobStatus(val label: String) {
-    NEW("New"), SAVED("Saved"), APPLIED("Applied"), REFERRAL_ASKED("Referral asked"),
-    INTERVIEW("Interview"), REJECTED("Rejected"), IGNORED("Ignored")
+    NEW("New"), SAVED("Kept"), APPLIED("Applied"), REFERRAL_ASKED("Referral asked"),
+    INTERVIEW("Interview"), REJECTED("Rejected"), IGNORED("Skipped")
 }
 
 @Serializable
 data class Job(
-    /** "<source>:<sourceId>" — unique key for de-duplication. */
+    /** "<source>:<sourceId>" - unique key for de-duplication. */
     val key: String,
     val source: String,
     val title: String,
@@ -130,17 +157,27 @@ data class Job(
     val emailsFound: List<String> = emptyList(),
     val status: JobStatus = JobStatus.NEW,
     val notes: String = "",
+    /** The "find people" prompt for this job was handled or dismissed. */
+    val peoplePrompted: Boolean = false,
+    val tailoredSummary: String = "",
+    /** File name of the tailored resume PDF in app storage (empty = none). */
+    val tailoredResume: String = "",
 )
 
 @Serializable
 enum class ContactKind(val label: String) {
-    RECRUITER("Recruiter / hiring team"), EMPLOYEE("Employee (referral)"), OTHER("Other")
+    RECRUITER("Recruiter"), EMPLOYEE("Employee"), OTHER("Other")
 }
 
+/**
+ * Outreach pipeline for one person. Nothing moves past SUGGESTED or CONNECTED without approval:
+ * SUGGESTED -> APPROVED -> INVITED -> CONNECTED -> ASK_APPROVED -> ASKED -> REPLIED / REFERRED
+ */
 @Serializable
-enum class ContactStatus(val label: String) {
-    TO_CONTACT("To contact"), CONTACTED("Contacted"), REPLIED("Replied"),
-    REFERRED("Referred"), NO_RESPONSE("No response"), DECLINED("Declined")
+enum class Stage(val label: String) {
+    SUGGESTED("Suggested"), APPROVED("Invite approved"), INVITED("Invited"), CONNECTED("Connected"),
+    ASK_APPROVED("Ask approved"), ASKED("Asked"), REPLIED("Replied"), REFERRED("Referred"),
+    NO_RESPONSE("No response"), DECLINED("Declined"), SKIPPED("Skipped")
 }
 
 @Serializable
@@ -152,16 +189,36 @@ data class Contact(
     val company: String = "",
     val jobKey: String = "",
     val kind: ContactKind = ContactKind.EMPLOYEE,
-    val status: ContactStatus = ContactStatus.TO_CONTACT,
-    val message: String = "",
+    /** LinkedIn connection degree: 1, 2, 3; 0 = unknown. */
+    val degree: Int = 0,
+    val rank: Int = 0,
+    /** Short reason this person ranks where they do, e.g. "Same college". */
+    val why: String = "",
+    val stage: Stage = Stage.SUGGESTED,
+    /** Connection-request note (may be empty: plain invite). */
+    val note: String = "",
+    /** Referral message sent once connected. */
+    val ask: String = "",
+    val template: String = "A",
     val addedAt: Long = System.currentTimeMillis(),
-    val contactedAt: Long = 0,
+    /** Profile was opened for sending; waiting for the user to confirm it went through. */
+    val openedAt: Long = 0,
+    val invitedAt: Long = 0,
+    val connectedAt: Long = 0,
+    val askedAt: Long = 0,
+    val repliedAt: Long = 0,
+    val followUps: Int = 0,
     val notes: String = "",
 )
 
 @Serializable
 enum class EmailStatus(val label: String) {
-    DRAFT("Draft"), APPROVED("Approved"), SENT("Sent"), FAILED("Failed"), SKIPPED("Skipped")
+    DRAFT("Draft"), APPROVED("Approved"), SENT("Sent"), FAILED("Failed"), BOUNCED("Bounced"), SKIPPED("Skipped")
+}
+
+@Serializable
+enum class ReplyKind(val label: String) {
+    NONE("No reply"), REPLY("Replied"), INTERVIEW("Interview"), REJECTION("Rejection"), AUTO("Auto-reply")
 }
 
 @Serializable
@@ -177,12 +234,32 @@ data class EmailLead(
     val context: String = "",
     val subject: String = "",
     val body: String = "",
+    val template: String = "A",
     val attachResume: Boolean = true,
     val status: EmailStatus = EmailStatus.DRAFT,
     val createdAt: Long = System.currentTimeMillis(),
+    val openedAt: Long = 0,
     val sentAt: Long = 0,
     val via: String = "",
     val error: String = "",
+    val reply: ReplyKind = ReplyKind.NONE,
+    val repliedAt: Long = 0,
+    val replySubject: String = "",
+)
+
+@Serializable
+enum class ActionKind { INVITE, MESSAGE, EMAIL }
+
+/** One outreach action that counts against a budget. */
+@Serializable
+data class OutreachAction(val at: Long, val kind: ActionKind, val ref: String = "")
+
+@Serializable
+data class Safety(
+    val pausedUntil: Long = 0,
+    val pauseReason: String = "",
+    /** true = only connection requests are paused; messages to existing connections still allowed. */
+    val invitesOnly: Boolean = false,
 )
 
 @Serializable
@@ -197,6 +274,18 @@ data class RunLog(
 )
 
 @Serializable
+data class MailScanLog(
+    val at: Long = 0,
+    val scanned: Int = 0,
+    val accepted: Int = 0,
+    val replies: Int = 0,
+    val interviews: Int = 0,
+    val rejections: Int = 0,
+    val bounces: Int = 0,
+    val error: String = "",
+)
+
+@Serializable
 data class AppData(
     val profile: Profile = Profile(),
     val searches: List<SearchPref> = emptyList(),
@@ -204,4 +293,7 @@ data class AppData(
     val contacts: List<Contact> = emptyList(),
     val emails: List<EmailLead> = emptyList(),
     val runs: List<RunLog> = emptyList(),
+    val actions: List<OutreachAction> = emptyList(),
+    val safety: Safety = Safety(),
+    val mailScan: MailScanLog = MailScanLog(),
 )

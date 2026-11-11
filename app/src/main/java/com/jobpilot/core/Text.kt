@@ -27,7 +27,7 @@ object Matcher {
         return Result(score, matched, missing)
     }
 
-    private fun containsTerm(hay: String, term: String): Boolean {
+    fun containsTerm(hay: String, term: String): Boolean {
         val t = term.lowercase().trim()
         if (t.isEmpty()) return false
         // Word-ish boundary match that tolerates symbols like c++, c#, node.js
@@ -87,9 +87,11 @@ object Templates {
         company: String = "",
         role: String = "",
         jobUrl: String = "",
+        preferSkills: List<String> = emptyList(),
     ): String {
         val first = recipientName.trim().split(" ").firstOrNull().orEmpty()
-        val skills = p.skillList()
+        // Skills the job actually mentions come first.
+        val skills = (preferSkills + p.skillList()).distinctBy { it.lowercase() }
         val values = mapOf(
             "firstName" to first.ifBlank { "there" },
             "name" to recipientName.ifBlank { "there" },
@@ -103,7 +105,7 @@ object Templates {
             "myLinkedIn" to p.linkedinUrl,
             "years" to p.yearsExperience.ifBlank { "relevant" }.let { if (it.all(Char::isDigit)) "$it years" else it },
             "skills" to skills.take(6).joinToString(", "),
-            "topSkills" to skills.take(3).joinToString(", ").ifBlank { "this area" },
+            "topSkills" to joinNatural(skills.take(3)).ifBlank { "this area" },
         )
         val placeholderOnly = Regex("^\\s*(\\{\\w+\\}\\s*)+$")
         val out = template.lines().mapNotNull { line ->
@@ -116,6 +118,12 @@ object Templates {
         return out.replace(Regex("[ \\t]+\n"), "\n").replace(Regex("\n{3,}"), "\n\n").trim()
     }
 
+    fun joinNatural(items: List<String>): String = when (items.size) {
+        0 -> ""
+        1 -> items[0]
+        else -> items.dropLast(1).joinToString(", ") + " and " + items.last()
+    }
+
     /** Shortens to the limit at a sentence/word boundary. */
     fun fit(text: String, limit: Int): String {
         if (limit <= 0 || text.length <= limit) return text
@@ -123,6 +131,6 @@ object Templates {
         val sentence = cut.lastIndexOfAny(charArrayOf('.', '!', '?'))
         if (sentence > limit * 0.6) return cut.substring(0, sentence + 1)
         val space = cut.lastIndexOf(' ')
-        return (if (space > 0) cut.substring(0, space) else cut).trimEnd(',', ' ') + "…"
+        return (if (space > 0) cut.substring(0, space) else cut).trimEnd(',', ' ') + "..."
     }
 }

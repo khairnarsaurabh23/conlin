@@ -21,28 +21,44 @@ import androidx.work.WorkerParameters
 import com.jobpilot.MainActivity
 import com.jobpilot.R
 import com.jobpilot.core.JobRunner
-import com.jobpilot.data.ContactStatus
+import com.jobpilot.core.MailScan
+import com.jobpilot.data.EmailStatus
+import com.jobpilot.data.Stage
 import com.jobpilot.data.Store
 import java.util.concurrent.TimeUnit
 
 class SearchWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
         Store.init(applicationContext)
-        if (Store.data.searches.none { it.enabled }) return Result.success()
-        val log = runCatching { JobRunner.runAll() }.getOrElse { return Result.retry() }
-
         val p = Store.data.profile
-        val due = Store.data.contacts.count {
-            it.status == ContactStatus.CONTACTED && it.contactedAt > 0 &&
-                System.currentTimeMillis() - it.contactedAt > TimeUnit.DAYS.toMillis(p.followUpDays.toLong())
+        var newJobs = 0
+        if (Store.data.searches.any { it.enabled }) {
+            val log = runCatching { JobRunner.runAll() }.getOrElse { return Result.retry() }
+            newJobs = log.newJobs
+        }
+        val scan = if (p.mailScanEnabled && p.smtpConfigured) runCatching { MailScan.run() }.getOrNull() else null
+        JobRunner.housekeeping()
+
+        val d = Store.data
+        val now = System.currentTimeMillis()
+        val toReview = d.contacts.count { it.stage == Stage.SUGGESTED || it.stage == Stage.CONNECTED } +
+            d.emails.count { it.status == EmailStatus.DRAFT }
+        val due = d.contacts.count {
+            it.stage == Stage.ASKED && it.followUps == 0 && now - it.askedAt > TimeUnit.DAYS.toMillis(p.followUpDays.toLong())
         }
         val parts = buildList {
-            if (log.newJobs > 0) add("${log.newJobs} new jobs")
-            if (log.newEmails > 0) add("${log.newEmails} recruiter emails to review")
-            if (log.newRecruiters > 0) add("${log.newRecruiters} recruiters found")
+            if (newJobs > 0) add("$newJobs new jobs")
+            if (scan != null && scan.error.isBlank()) {
+                if (scan.accepted > 0) add("${scan.accepted} invites accepted")
+                if (scan.interviews > 0) add("${scan.interviews} interview mails")
+                if (scan.replies > 0) add("${scan.replies} replies")
+            }
+            if (toReview > 0) add("$toReview waiting for approval")
             if (due > 0) add("$due follow-ups due")
         }
-        if (parts.isNotEmpty()) Notifier.show(applicationContext, "JobPilot", parts.joinToString(" · "))
+        if (newJobs > 0 || (scan != null && scan.accepted + scan.interviews + scan.replies > 0) || due > 0) {
+            Notifier.show(applicationContext, "JobPilot", parts.joinToString(", "))
+        }
         return Result.success()
     }
 

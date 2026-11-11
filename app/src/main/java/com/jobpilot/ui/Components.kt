@@ -1,0 +1,299 @@
+package com.jobpilot.ui
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+
+private val PanelShape = RoundedCornerShape(12.dp)
+private val ButtonShape = RoundedCornerShape(8.dp)
+
+/** A full-screen page: handles system bars and the keyboard in one place. */
+@Composable
+fun Page(
+    snack: SnackbarHostState,
+    bottomBar: @Composable () -> Unit = {},
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snack) },
+        bottomBar = bottomBar,
+        contentWindowInsets = WindowInsets.systemBars,
+    ) { pad ->
+        Column(Modifier.padding(pad).consumeWindowInsets(pad).imePadding().fillMaxSize(), content = content)
+    }
+}
+
+@Composable
+fun Header(title: String, onBack: (() -> Unit)? = null, actions: @Composable RowScope.() -> Unit = {}) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = if (onBack != null) 4.dp else 20.dp, end = 8.dp, top = 10.dp, bottom = 4.dp)
+            .heightIn(min = 48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+        Text(
+            title, style = MaterialTheme.typography.headlineSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        actions()
+    }
+}
+
+@Composable
+fun Panel(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier.fillMaxWidth().clip(PanelShape)
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, PanelShape)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(14.dp),
+        content = content,
+    )
+}
+
+@Composable
+fun Btn(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, primary: Boolean = false, enabled: Boolean = true) {
+    val pad = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+    if (primary) {
+        Button(
+            onClick = onClick, modifier = modifier.heightIn(min = 38.dp), enabled = enabled, shape = ButtonShape,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.surface,
+            ),
+            contentPadding = pad,
+        ) { Text(text, maxLines = 1) }
+    } else {
+        OutlinedButton(
+            onClick = onClick, modifier = modifier.heightIn(min = 38.dp), enabled = enabled, shape = ButtonShape,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = if (enabled) 1f else 0.4f)),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+            contentPadding = pad,
+        ) { Text(text, maxLines = 1) }
+    }
+}
+
+/** Low-emphasis text action. */
+@Composable
+fun Quiet(text: String, onClick: () -> Unit, enabled: Boolean = true, color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
+    TextButton(
+        onClick = onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        colors = ButtonDefaults.textButtonColors(contentColor = color),
+    ) { Text(text, maxLines = 1) }
+}
+
+@Composable
+fun SectionTitle(text: String, modifier: Modifier = Modifier, trailing: String = "") {
+    Row(modifier.fillMaxWidth().padding(top = 22.dp, bottom = 8.dp), verticalAlignment = Alignment.Bottom) {
+        Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        if (trailing.isNotBlank()) Muted(trailing)
+    }
+}
+
+@Composable
+fun Muted(text: String, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_VALUE, color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
+    Text(text, modifier = modifier, style = MaterialTheme.typography.bodySmall, color = color, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+}
+
+/** Drafted text shown as a quotation: a rule down the left side. */
+@Composable
+fun Quote(text: String, modifier: Modifier = Modifier, maxLines: Int = 4) {
+    Row(modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+        Box(Modifier.width(2.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
+        Text(
+            text, style = MaterialTheme.typography.bodyMedium, maxLines = maxLines, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 10.dp),
+        )
+    }
+}
+
+@Composable
+fun ScoreText(score: Int) {
+    Text("$score%", color = scoreColor(score), fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodyMedium)
+}
+
+/** Underlined text tabs. */
+@Composable
+fun <T> Seg(options: List<T>, selected: T, label: (T) -> String, modifier: Modifier = Modifier, onSelect: (T) -> Unit) {
+    Row(modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
+        options.forEach { o ->
+            val sel = o == selected
+            Column(
+                Modifier.clip(RoundedCornerShape(6.dp)).clickable { onSelect(o) }.padding(horizontal = 8.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    label(o), style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (sel) FontWeight.Medium else FontWeight.Normal,
+                    color = if (sel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                Box(Modifier.width(20.dp).height(2.dp).background(if (sel) MaterialTheme.colorScheme.onSurface else Color.Transparent))
+            }
+        }
+    }
+}
+
+/** A thin usage bar with a caption, e.g. "Invites this week  12 of 60". */
+@Composable
+fun Meter(label: String, value: Int, max: Int, modifier: Modifier = Modifier) {
+    val frac = if (max <= 0) 0f else (value.toFloat() / max).coerceIn(0f, 1f)
+    val full = value >= max
+    Column(modifier) {
+        Row {
+            Muted(label, Modifier.weight(1f))
+            Muted("$value of $max", color = if (full) warn else MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.height(4.dp))
+        Box(Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(MaterialTheme.colorScheme.outlineVariant)) {
+            Box(
+                Modifier.fillMaxWidth(frac).height(3.dp)
+                    .background(if (full) warn else MaterialTheme.colorScheme.primary)
+            )
+        }
+    }
+}
+
+@Composable
+fun Field(
+    label: String, value: String, modifier: Modifier = Modifier, lines: Int = 1, secret: Boolean = false,
+    keyboard: KeyboardType = KeyboardType.Text, onChange: (String) -> Unit,
+) {
+    OutlinedTextField(
+        value = value, onValueChange = onChange, label = { Text(label) },
+        singleLine = lines == 1, minLines = lines, shape = ButtonShape,
+        visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboard),
+        colors = OutlinedTextFieldDefaults.colors(
+            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+            focusedBorderColor = MaterialTheme.colorScheme.onSurface,
+            focusedLabelColor = MaterialTheme.colorScheme.onSurface,
+            cursorColor = MaterialTheme.colorScheme.onSurface,
+        ),
+        modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
+    )
+}
+
+@Composable
+fun NumField(label: String, value: Int, modifier: Modifier = Modifier, onChange: (Int) -> Unit) {
+    // Not keyed on value: callers clamp the number, and re-keying would fight the user's typing.
+    var text by remember { mutableStateOf(value.toString()) }
+    Field(label, text, modifier, keyboard = KeyboardType.Number) { t ->
+        text = t.filter(Char::isDigit).take(4)
+        text.toIntOrNull()?.let(onChange)
+    }
+}
+
+@Composable
+fun Toggle(label: String, checked: Boolean, hint: String = "", onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            if (hint.isNotBlank()) Muted(hint)
+        }
+        Switch(
+            checked = checked, onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = MaterialTheme.colorScheme.onSurface, checkedThumbColor = MaterialTheme.colorScheme.surface,
+                uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant, uncheckedBorderColor = MaterialTheme.colorScheme.outline,
+                uncheckedThumbColor = MaterialTheme.colorScheme.outline,
+            ),
+        )
+    }
+}
+
+@Composable
+fun Dialog(
+    title: String, onDismiss: () -> Unit, confirm: String, onConfirm: () -> Unit,
+    confirmEnabled: Boolean = true, dismiss: String = "Cancel", onDismissButton: (() -> Unit)? = null,
+    content: @Composable () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
+        text = content,
+        confirmButton = { Quiet(confirm, onConfirm, confirmEnabled, MaterialTheme.colorScheme.onSurface) },
+        dismissButton = { Quiet(dismiss, onDismissButton ?: onDismiss) },
+        shape = RoundedCornerShape(14.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp,
+    )
+}
+
+@Composable
+fun EmptyNote(title: String, body: String) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 36.dp)) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(6.dp))
+        Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+fun Gap(h: Int = 8) = Spacer(Modifier.height(h.dp))
+
+@Composable
+fun ButtonRow(modifier: Modifier = Modifier, content: @Composable RowScope.() -> Unit) {
+    Row(
+        modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically, content = content,
+    )
+}

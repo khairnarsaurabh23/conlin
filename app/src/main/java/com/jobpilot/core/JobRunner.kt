@@ -5,23 +5,26 @@ import com.jobpilot.data.Contact
 import com.jobpilot.data.ContactKind
 import com.jobpilot.data.EmailLead
 import com.jobpilot.data.Job
+import com.jobpilot.data.JobStatus
 import com.jobpilot.data.Profile
 import com.jobpilot.data.RunLog
+import com.jobpilot.data.Stage
 import com.jobpilot.data.Store
 import com.jobpilot.net.Http
-import com.jobpilot.net.LinkedInJobs
 import com.jobpilot.net.JSearch
+import com.jobpilot.net.LinkedInJobs
 import kotlinx.coroutines.delay
+import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
-/** Runs the saved searches, stores new jobs, enriches them and queues outreach. */
+/** Runs the saved searches, stores new jobs, enriches them and proposes outreach for approval. */
 object JobRunner {
 
     @Volatile var running = false
         private set
 
     suspend fun runAll(onProgress: (String) -> Unit = {}): RunLog {
-        if (running) return RunLog(System.currentTimeMillis(), 0, 0, 0, 0, 0, listOf("A search is already running"))
+        if (running) return RunLog(System.currentTimeMillis(), 0, 0, 0, 0, 0, listOf("A check is already running"))
         running = true
         try {
             return doRun(onProgress)
@@ -42,11 +45,11 @@ object JobRunner {
         val found = mutableListOf<Job>()
         for (s in searches) {
             if (profile.useLinkedIn) {
-                onProgress("LinkedIn: ${s.label()}")
+                onProgress("Searching LinkedIn: ${s.label()}")
                 found += LinkedInJobs.search(s) { errors += it }
             }
             if (profile.useJSearch && profile.jsearchApiKey.isNotBlank()) {
-                onProgress("JSearch: ${s.label()}")
+                onProgress("Searching JSearch: ${s.label()}")
                 found += JSearch.search(s, profile.jsearchApiKey) { errors += it }
             }
         }
@@ -76,17 +79,19 @@ object JobRunner {
         val toEnrich = scoredNew.filter { !it.detailsFetched && it.key.startsWith("li:") }
             .sortedByDescending { it.matchScore }
             .take(profile.detailFetchLimit)
+        val recruitersBefore = Store.data.contacts.size
         var i = 0
         for (j in toEnrich) {
             i++
-            onProgress("Reading job $i/${toEnrich.size}: ${j.title}")
+            onProgress("Reading job $i of ${toEnrich.size}: ${j.title}")
             enrich(j.key, errors)
             delay(1500L + Random.nextLong(1000))
         }
 
-        // 4. Turn emails in descriptions + recruiters into outreach items
+        // 4. Turn emails in descriptions into drafts for approval
         val keysNew = scoredNew.map { it.key }.toSet()
-        val (emailsAdded, recruitersAdded) = queueOutreach(Store.data.jobs.filter { it.key in keysNew })
+        val emailsAdded = queueEmails(Store.data.jobs.filter { it.key in keysNew })
+        housekeeping()
 
         val log = RunLog(
             at = System.currentTimeMillis(),
@@ -94,11 +99,10 @@ object JobRunner {
             jobsSeen = filtered.size,
             newJobs = scoredNew.size,
             newEmails = emailsAdded,
-            newRecruiters = recruitersAdded,
+            newRecruiters = Store.data.contacts.size - recruitersBefore,
             errors = errors.distinct(),
         )
         Store.update { d -> d.copy(runs = (listOf(log) + d.runs).take(60)) }
-        onProgress("Done: ${log.newJobs} new jobs")
         return log
     }
 
@@ -125,29 +129,65 @@ object JobRunner {
         val kw = Store.data.searches.firstOrNull { it.id == job.searchId }?.keywords.orEmpty()
         Store.updateJob(job.key) { rescore(it.copy(description = det.description, criteria = det.criteria, detailsFetched = true), profile, kw) }
         det.poster?.let { p ->
-            if (Store.data.contacts.none { Store.sameProfile(it.profileUrl, p.profileUrl) }) {
-                Store.upsertContact(
-                    Contact(
-                        id = Store.newId(), name = p.name, headline = p.headline, profileUrl = p.profileUrl,
-                        company = job.company, jobKey = job.key, kind = ContactKind.RECRUITER,
-                        message = referralMessage(profile, p.name, job.company, job.title, job.url, recruiter = true),
-                    )
-                )
-            }
+            val fresh = Store.data.jobs.firstOrNull { it.key == jobKey } ?: job
+            Store.addContact(newContact(p.name, p.headline, p.profileUrl, fresh, ContactKind.RECRUITER))
         }
         return true
     }
 
-    /** Creates email drafts for addresses found in job descriptions. Returns (emails, recruiters) counts. */
-    suspend fun queueOutreach(jobs: List<Job>): Pair<Int, Int> {
-        var emails = 0
+    fun kindFor(headline: String): ContactKind =
+        if (headline.contains(Regex("(?i)recruit|talent|hiring|\\bHR\\b|human resources|people ops")))
+            ContactKind.RECRUITER else ContactKind.EMPLOYEE
+
+    /** Builds a suggestion: ranked, with a drafted note and referral ask. Nothing is sent. */
+    fun newContact(
+        name: String, headline: String, url: String, job: Job?,
+        kind: ContactKind = kindFor(headline), degree: Int = 0, tag: String = "",
+    ): Contact {
+        val d = Store.data
+        val r = Rank.score(headline, degree, kind, d.profile, job, tag)
+        val tpl = pickTemplate(d.profile.noteTemplateB.isNotBlank(), d.contacts.count { it.template == "A" }, d.contacts.count { it.template == "B" })
+        val base = Contact(
+            id = Store.newId(), name = name, headline = headline, profileUrl = url.substringBefore("?"),
+            company = job?.company.orEmpty(), jobKey = job?.key.orEmpty(), kind = kind,
+            degree = degree, rank = r.score, why = r.why, template = tpl,
+            // Existing connections skip the invite step and go straight to the referral ask.
+            stage = if (degree == 1) Stage.CONNECTED else Stage.SUGGESTED,
+            connectedAt = if (degree == 1) System.currentTimeMillis() else 0,
+        )
+        return base.copy(note = draftNote(d.profile, base, job), ask = draftAsk(d.profile, base, job))
+    }
+
+    private fun pickTemplate(hasB: Boolean, a: Int, b: Int) = if (hasB && b < a) "B" else "A"
+
+    fun draftNote(p: Profile, c: Contact, job: Job?): String {
+        val tpl = if (c.template == "B" && p.noteTemplateB.isNotBlank()) p.noteTemplateB else p.noteTemplateA
+        if (tpl.isBlank()) return ""
+        val text = Templates.fill(tpl, p, c.name, job?.company ?: c.company, roleOf(job), job?.url.orEmpty(), job?.matchedSkills.orEmpty())
+        return Templates.fit(text, p.noteCharLimit)
+    }
+
+    fun draftAsk(p: Profile, c: Contact, job: Job?): String =
+        Templates.fill(p.askTemplate, p, c.name, job?.company ?: c.company, roleOf(job), job?.url.orEmpty(), job?.matchedSkills.orEmpty())
+
+    fun draftFollowUp(p: Profile, c: Contact, job: Job?): String = Templates.fill(
+        "Hi {firstName}, following up on my note about the {role} role at {company}. " +
+            "If a referral isn't possible, no problem at all. A pointer to the right person would help just as much. Thanks.",
+        p, c.name, job?.company ?: c.company, roleOf(job), job?.url.orEmpty(),
+    )
+
+    /** "Senior Android Developer (Kotlin) - Remote" -> "Senior Android Developer" */
+    fun roleOf(job: Job?): String = job?.title?.split(Regex("\\s[-|]\\s|[(,]"))?.first()?.trim().orEmpty()
+
+    /** Creates email drafts for addresses found in job descriptions. Returns how many were added. */
+    suspend fun queueEmails(jobs: List<Job>): Int {
+        var n = 0
         for (j in jobs) {
             for (f in Emails.extract(j.description)) {
-                if (addEmailLead(f.email, f.context, j.url, company = j.company, role = j.title, jobKey = j.key)) emails++
+                if (addEmailLead(f.email, f.context, j.url, company = j.company, role = roleOf(j), jobKey = j.key)) n++
             }
         }
-        val recruiters = Store.data.contacts.count { c -> c.kind == ContactKind.RECRUITER && jobs.any { it.key == c.jobKey } }
-        return emails to recruiters
+        return n
     }
 
     /** Adds a draft email if this address hasn't been queued/sent before. */
@@ -156,17 +196,23 @@ object JobRunner {
         company: String = "", role: String = "", jobKey: String = "", name: String = "",
     ): Boolean {
         val addr = email.lowercase().trim()
-        if (Store.data.emails.any { it.to.equals(addr, ignoreCase = true) }) return false
-        val p = Store.data.profile
+        val d = Store.data
+        if (d.emails.any { it.to.equals(addr, ignoreCase = true) }) return false
+        val p = d.profile
         val c = company.ifBlank { Emails.companyFromEmail(addr) }
-        val r = role.ifBlank { defaultRole(Store.data) }
+        val r = role.ifBlank { defaultRole(d) }
         val n = name.ifBlank { Emails.guessNameFromEmail(addr) }
+        val hasB = p.emailBodyB.isNotBlank()
+        val tpl = pickTemplate(hasB, d.emails.count { it.template == "A" }, d.emails.count { it.template == "B" })
+        val subjectT = if (tpl == "B" && p.emailSubjectB.isNotBlank()) p.emailSubjectB else p.emailSubjectA
+        val bodyT = if (tpl == "B") p.emailBodyB else p.emailBodyA
+        val prefer = d.jobs.firstOrNull { it.key == jobKey }?.matchedSkills.orEmpty()
         Store.upsertEmail(
             EmailLead(
                 id = Store.newId(), to = addr, name = n, company = c, role = r, jobKey = jobKey,
-                sourceUrl = sourceUrl, context = context.take(600),
-                subject = Templates.fill(p.emailSubjectTemplate, p, n, c, r, sourceUrl),
-                body = Templates.fill(p.emailBodyTemplate, p, n, c, r, sourceUrl),
+                sourceUrl = sourceUrl, context = context.take(600), template = tpl,
+                subject = Templates.fill(subjectT, p, n, c, r, sourceUrl, prefer),
+                body = Templates.fill(bodyT, p, n, c, r, sourceUrl, prefer),
                 attachResume = Store.resumeFile() != null,
             )
         )
@@ -178,17 +224,21 @@ object JobRunner {
             ?.split(" ")?.joinToString(" ") { w -> w.replaceFirstChar(Char::uppercase) }
             .orEmpty()
 
-    fun referralMessage(p: Profile, name: String, company: String, role: String, jobUrl: String, recruiter: Boolean = false): String {
-        val tpl = if (recruiter) p.referralTemplate.replace("Would you be open to referring me?", "Could I share my profile for this role?")
-        else p.referralTemplate
-        return Templates.fit(Templates.fill(tpl, p, name, company, role, jobUrl), p.referralCharLimit)
+    /** Closes out asks that got no answer after one follow-up. */
+    suspend fun housekeeping() {
+        val now = System.currentTimeMillis()
+        val wait = TimeUnit.DAYS.toMillis(Store.data.profile.followUpDays.toLong())
+        Store.update { d ->
+            if (d.contacts.none { it.stage == Stage.ASKED && it.followUps >= 1 && now - it.askedAt > wait }) d
+            else d.copy(contacts = d.contacts.map {
+                if (it.stage == Stage.ASKED && it.followUps >= 1 && now - it.askedAt > wait) it.copy(stage = Stage.NO_RESPONSE) else it
+            })
+        }
     }
 
     // ---------- Things shared into the app from LinkedIn / browser ----------
 
-    data class ShareResult(val summary: String)
-
-    suspend fun handleShared(text: String): ShareResult {
+    suspend fun handleShared(text: String): String {
         val t = text.trim()
         val profileUrl = Regex("https?://[a-z.]*linkedin\\.com/in/[A-Za-z0-9_%\\-]+/?").find(t)?.value
         val jobId = Regex("linkedin\\.com/(?:comm/)?jobs/view/(?:[^/?\\s]*-)?(\\d{6,})").find(t)?.groupValues?.get(1)
@@ -200,10 +250,10 @@ object JobRunner {
         if (direct.isNotEmpty()) {
             var n = 0
             direct.forEach { if (addEmailLead(it.email, it.context, anyUrl.orEmpty())) n++ }
-            return ShareResult("Found ${direct.size} email(s); $n new draft(s) added to Emails.")
+            return "Found ${direct.size} email(s). $n new draft(s) are waiting in your inbox."
         }
 
-        // 2. A job link → add the job and read its details
+        // 2. A job link: add the job and read its details
         if (jobId != null) {
             val key = "li:$jobId"
             if (Store.data.jobs.none { it.key == key }) {
@@ -216,17 +266,19 @@ object JobRunner {
                     key = key, source = "LinkedIn (shared)", title = role.ifBlank { "LinkedIn job $jobId" },
                     company = company, url = LinkedInJobs.jobUrl(jobId),
                     description = det?.description.orEmpty(), criteria = det?.criteria.orEmpty(),
-                    detailsFetched = det != null, status = com.jobpilot.data.JobStatus.SAVED,
+                    detailsFetched = det != null, status = JobStatus.SAVED,
                 )
                 Store.update { d -> d.copy(jobs = listOf(rescore(job, d.profile, defaultRole(d))) + d.jobs) }
-                if (det != null) queueOutreach(listOf(job))
-                return ShareResult("Job saved: ${job.title}")
+                val saved = Store.data.jobs.first { it.key == key }
+                det?.poster?.let { p -> Store.addContact(newContact(p.name, p.headline, p.profileUrl, saved, ContactKind.RECRUITER)) }
+                if (det != null) queueEmails(listOf(saved))
+                return "Job kept: ${job.title}"
             }
-            Store.updateJob(key) { it.copy(status = com.jobpilot.data.JobStatus.SAVED) }
-            return ShareResult("Job already tracked — marked as Saved.")
+            Store.updateJob(key) { if (it.status == JobStatus.NEW || it.status == JobStatus.IGNORED) it.copy(status = JobStatus.SAVED) else it }
+            return "That job is already tracked."
         }
 
-        // 3. A profile link → add as a referral contact
+        // 3. A profile link: add as a suggestion
         if (profileUrl != null) {
             val name = t.substringBefore("http").lines().firstOrNull { it.isNotBlank() }
                 ?.replace(Regex("(?i)(check out|view|'s profile|on linkedin|profile)"), "")?.trim()
@@ -234,12 +286,11 @@ object JobRunner {
             val slugName = profileUrl.trimEnd('/').substringAfterLast("/")
                 .replace(Regex("-[0-9a-f]{5,}$"), "").split("-")
                 .joinToString(" ") { it.replaceFirstChar(Char::uppercase) }
-            val c = Contact(id = Store.newId(), name = name.ifBlank { slugName }, profileUrl = profileUrl)
-            Store.upsertContact(c)
-            return ShareResult("Added ${c.name} to People. Link them to a job to generate a referral note.")
+            val c = newContact(name.ifBlank { slugName }, "", profileUrl, null)
+            return if (Store.addContact(c)) "Added ${c.name}. Review the suggestion in your inbox." else "${c.name} is already tracked."
         }
 
-        // 4. A post link → try to read the public post for emails
+        // 4. A post link: try to read the public post for emails
         if (anyUrl != null && anyUrl.contains("linkedin.com")) {
             val html = runCatching { Http.get(anyUrl) }.getOrNull()
             if (html != null) {
@@ -247,14 +298,14 @@ object JobRunner {
                 val f = Emails.extract(text2).filter { Emails.looksLikeHiringAsk(it.context) }
                 var n = 0
                 f.forEach { if (addEmailLead(it.email, it.context, anyUrl)) n++ }
-                if (f.isNotEmpty()) return ShareResult("Found ${f.size} email(s) in the post; $n new draft(s) added.")
+                if (f.isNotEmpty()) return "Found ${f.size} email(s) in the post. $n new draft(s) added."
             }
-            return ShareResult("No email found in that link. Open it in the in-app Browser and tap \"Grab emails\".")
+            return "No email found in that link. Open it in the LinkedIn tab and tap Grab emails."
         }
-        return ShareResult("Nothing recognised. Share a LinkedIn profile, job, or a post containing an email.")
+        return "Nothing recognised. Share a LinkedIn profile, a job, or a post containing an email."
     }
 
-    /** "Android Developer at Acme | LinkedIn" / "Acme hiring Android Developer in Pune" */
+    /** "Android Developer at Acme" / "Acme hiring Android Developer in Pune" */
     fun splitTitle(t: String): Pair<String, String> {
         Regex("^(.*?) hiring (.*?)( in .*)?$").find(t)?.let { return it.groupValues[2].trim() to it.groupValues[1].trim() }
         Regex("^(.*) at (.*)$").find(t)?.let { return it.groupValues[1].trim() to it.groupValues[2].trim() }
