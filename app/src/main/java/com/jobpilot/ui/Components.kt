@@ -33,6 +33,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -61,9 +62,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
-private val PanelShape = RoundedCornerShape(12.dp)
-private val ButtonShape = RoundedCornerShape(8.dp)
+private val PanelShape = RoundedCornerShape(4.dp)
+private val ButtonShape = RoundedCornerShape(4.dp)
 
 /** A full-screen page: handles system bars and the keyboard in one place. */
 @Composable
@@ -82,20 +84,23 @@ fun Page(
     }
 }
 
+/** Screen header written as a path: jobpilot/inbox. */
 @Composable
 fun Header(title: String, onBack: (() -> Unit)? = null, actions: @Composable RowScope.() -> Unit = {}) {
     Row(
-        Modifier.fillMaxWidth().padding(start = if (onBack != null) 4.dp else 20.dp, end = 8.dp, top = 10.dp, bottom = 4.dp)
-            .heightIn(min = 48.dp),
+        Modifier.fillMaxWidth().padding(start = if (onBack != null) 4.dp else 16.dp, end = 6.dp, top = 6.dp)
+            .heightIn(min = 46.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+        Text("jobpilot/", fontFamily = Mono, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
         Text(
-            title, style = MaterialTheme.typography.headlineSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
+            title.lowercase().replace(' ', '-'), fontFamily = Mono, fontSize = 15.sp, fontWeight = FontWeight.Medium,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
         )
         actions()
     }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
 @Composable
@@ -105,7 +110,7 @@ fun Panel(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null, content:
             .background(MaterialTheme.colorScheme.surface)
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, PanelShape)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(14.dp),
+            .padding(12.dp),
         content = content,
     )
 }
@@ -115,7 +120,7 @@ fun Btn(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, primar
     val pad = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
     if (primary) {
         Button(
-            onClick = onClick, modifier = modifier.heightIn(min = 38.dp), enabled = enabled, shape = ButtonShape,
+            onClick = onClick, modifier = modifier.heightIn(min = 36.dp), enabled = enabled, shape = ButtonShape,
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.surface,
             ),
@@ -123,7 +128,7 @@ fun Btn(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, primar
         ) { Text(text, maxLines = 1) }
     } else {
         OutlinedButton(
-            onClick = onClick, modifier = modifier.heightIn(min = 38.dp), enabled = enabled, shape = ButtonShape,
+            onClick = onClick, modifier = modifier.heightIn(min = 36.dp), enabled = enabled, shape = ButtonShape,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = if (enabled) 1f else 0.4f)),
             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
             contentPadding = pad,
@@ -133,18 +138,46 @@ fun Btn(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, primar
 
 /** Low-emphasis text action. */
 @Composable
-fun Quiet(text: String, onClick: () -> Unit, enabled: Boolean = true, color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
+fun Quiet(text: String, onClick: () -> Unit, enabled: Boolean = true, color: Color = MaterialTheme.colorScheme.primary) {
     TextButton(
-        onClick = onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        onClick = onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp), shape = ButtonShape,
         colors = ButtonDefaults.textButtonColors(contentColor = color),
     ) { Text(text, maxLines = 1) }
 }
 
+/** Section heading written like a code comment, with an optional count on the right. */
 @Composable
 fun SectionTitle(text: String, modifier: Modifier = Modifier, trailing: String = "") {
-    Row(modifier.fillMaxWidth().padding(top = 22.dp, bottom = 8.dp), verticalAlignment = Alignment.Bottom) {
-        Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-        if (trailing.isNotBlank()) Muted(trailing)
+    Row(modifier.fillMaxWidth().padding(top = 20.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "// " + text.lowercase(), fontFamily = Mono, fontSize = 12.5.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f),
+        )
+        if (trailing.isNotBlank()) Label(trailing)
+    }
+}
+
+/** Small monospace label: card kinds, counts, timestamps. */
+@Composable
+fun Label(text: String, modifier: Modifier = Modifier, color: Color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines: Int = 1) {
+    Text(text, modifier = modifier, style = MaterialTheme.typography.labelSmall, color = color, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+}
+
+/** Bordered monospace tag, e.g. a status. */
+@Composable
+fun Tag(text: String, color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
+    Text(
+        text.lowercase(), style = MaterialTheme.typography.labelSmall, color = color, maxLines = 1,
+        modifier = Modifier.border(1.dp, color.copy(alpha = 0.45f), RoundedCornerShape(3.dp)).padding(horizontal = 5.dp, vertical = 1.dp),
+    )
+}
+
+/** One line of evidence, marked the way a diff marks lines: + for, - against, ! caution. */
+@Composable
+fun Mark(sign: String, text: String, color: Color, modifier: Modifier = Modifier, maxLines: Int = 3) {
+    Row(modifier.padding(vertical = 1.dp)) {
+        Text(sign, fontFamily = Mono, fontSize = 13.sp, color = color, modifier = Modifier.width(16.dp))
+        Text(text, style = MaterialTheme.typography.bodySmall, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -167,7 +200,7 @@ fun Quote(text: String, modifier: Modifier = Modifier, maxLines: Int = 4) {
 
 @Composable
 fun ScoreText(score: Int) {
-    Text("$score%", color = scoreColor(score), fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodyMedium)
+    Text("$score%", color = scoreColor(score), fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 14.sp)
 }
 
 /** Underlined text tabs. */
@@ -177,16 +210,15 @@ fun <T> Seg(options: List<T>, selected: T, label: (T) -> String, modifier: Modif
         options.forEach { o ->
             val sel = o == selected
             Column(
-                Modifier.clip(RoundedCornerShape(6.dp)).clickable { onSelect(o) }.padding(horizontal = 8.dp, vertical = 8.dp),
+                Modifier.clip(RoundedCornerShape(3.dp)).clickable { onSelect(o) }.padding(horizontal = 8.dp, vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    label(o), style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (sel) FontWeight.Medium else FontWeight.Normal,
+                    label(o).lowercase(), fontFamily = Mono, fontSize = 12.5.sp,
                     color = if (sel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(4.dp))
-                Box(Modifier.width(20.dp).height(2.dp).background(if (sel) MaterialTheme.colorScheme.onSurface else Color.Transparent))
+                Box(Modifier.width(20.dp).height(2.dp).background(if (sel) MaterialTheme.colorScheme.primary else Color.Transparent))
             }
         }
     }
@@ -199,11 +231,11 @@ fun Meter(label: String, value: Int, max: Int, modifier: Modifier = Modifier) {
     val full = value >= max
     Column(modifier) {
         Row {
-            Muted(label, Modifier.weight(1f))
-            Muted("$value of $max", color = if (full) warn else MaterialTheme.colorScheme.onSurfaceVariant)
+            Label(label.lowercase(), Modifier.weight(1f))
+            Label("$value/$max", color = if (full) warn else MaterialTheme.colorScheme.onSurface)
         }
         Spacer(Modifier.height(4.dp))
-        Box(Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(MaterialTheme.colorScheme.outlineVariant)) {
+        Box(Modifier.fillMaxWidth().height(3.dp).background(MaterialTheme.colorScheme.outlineVariant)) {
             Box(
                 Modifier.fillMaxWidth(frac).height(3.dp)
                     .background(if (full) warn else MaterialTheme.colorScheme.primary)
@@ -224,9 +256,9 @@ fun Field(
         keyboardOptions = KeyboardOptions(keyboardType = keyboard),
         colors = OutlinedTextFieldDefaults.colors(
             unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
-            focusedBorderColor = MaterialTheme.colorScheme.onSurface,
-            focusedLabelColor = MaterialTheme.colorScheme.onSurface,
-            cursorColor = MaterialTheme.colorScheme.onSurface,
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            focusedLabelColor = MaterialTheme.colorScheme.primary,
+            cursorColor = MaterialTheme.colorScheme.primary,
         ),
         modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
     )
@@ -268,11 +300,11 @@ fun Dialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
+        title = { Text(title, style = MaterialTheme.typography.titleMedium) },
         text = content,
         confirmButton = { Quiet(confirm, onConfirm, confirmEnabled, MaterialTheme.colorScheme.onSurface) },
         dismissButton = { Quiet(dismiss, onDismissButton ?: onDismiss) },
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(6.dp),
         containerColor = MaterialTheme.colorScheme.surface,
         tonalElevation = 0.dp,
     )
@@ -281,7 +313,7 @@ fun Dialog(
 @Composable
 fun EmptyNote(title: String, body: String) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 36.dp)) {
-        Text(title, style = MaterialTheme.typography.titleMedium)
+        Text(title, style = MaterialTheme.typography.titleSmall)
         Spacer(Modifier.height(6.dp))
         Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }

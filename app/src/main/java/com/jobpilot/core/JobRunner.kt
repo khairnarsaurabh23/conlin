@@ -72,7 +72,8 @@ object JobRunner {
             newJobs += j
         }
         val kwById = searches.associate { it.id to it.keywords }
-        val scoredNew = newJobs.map { rescore(it, profile, kwById[it.searchId].orEmpty()) }
+        val prefs = TitlePrefs.of(existing)
+        val scoredNew = newJobs.map { rescore(it, profile, kwById[it.searchId].orEmpty(), prefs) }
         Store.update { d -> d.copy(jobs = scoredNew + d.jobs) }
 
         // 3. Fetch full descriptions for the best new LinkedIn jobs
@@ -109,10 +110,19 @@ object JobRunner {
     private fun sig(j: Job) = (j.title.lowercase().replace(Regex("\\W+"), "") + "|" +
         j.company.lowercase().replace(Regex("\\W+"), ""))
 
-    fun rescore(j: Job, p: Profile, keywords: String): Job {
-        val r = Matcher.score(j, p, keywords)
+    fun rescore(j: Job, p: Profile, keywords: String, prefs: TitlePrefs = TitlePrefs.NONE): Job {
+        val r = Matcher.score(j, p, keywords, prefs)
         val mails = if (j.description.isNotBlank()) Emails.extract(j.description).map { it.email } else j.emailsFound
-        return j.copy(matchScore = r.score, matchedSkills = r.matched, missingSkills = r.missing, emailsFound = mails)
+        return j.copy(
+            matchScore = r.score, matchedSkills = r.matched, missingSkills = r.missing, emailsFound = mails,
+            reasons = r.reasons, cautions = r.cautions,
+        )
+    }
+
+    fun rescoreAll(d: AppData): AppData {
+        val kw = d.searches.associate { it.id to it.keywords }
+        val prefs = TitlePrefs.of(d.jobs)
+        return d.copy(jobs = d.jobs.map { rescore(it, d.profile, kw[it.searchId] ?: defaultRole(d), prefs) })
     }
 
     /** Fetch the public job page for one LinkedIn job; also captures the recruiter if shown. */
@@ -127,10 +137,11 @@ object JobRunner {
         }
         val profile = Store.data.profile
         val kw = Store.data.searches.firstOrNull { it.id == job.searchId }?.keywords.orEmpty()
-        Store.updateJob(job.key) { rescore(it.copy(description = det.description, criteria = det.criteria, detailsFetched = true), profile, kw) }
+        val prefs = TitlePrefs.of(Store.data.jobs)
+        Store.updateJob(job.key) { rescore(it.copy(description = det.description, criteria = det.criteria, detailsFetched = true), profile, kw, prefs) }
         det.poster?.let { p ->
             val fresh = Store.data.jobs.firstOrNull { it.key == jobKey } ?: job
-            Store.addContact(newContact(p.name, p.headline, p.profileUrl, fresh, ContactKind.RECRUITER))
+            Store.addContact(newContact(p.name, p.headline, p.profileUrl, fresh, ContactKind.RECRUITER, source = "posting"))
         }
         return true
     }
@@ -139,36 +150,76 @@ object JobRunner {
         if (headline.contains(Regex("(?i)recruit|talent|hiring|\\bHR\\b|human resources|people ops")))
             ContactKind.RECRUITER else ContactKind.EMPLOYEE
 
-    /** Builds a suggestion: ranked, with a drafted note and referral ask. Nothing is sent. */
+    /** Builds a suggestion: ranked, with its evidence, a drafted note and referral ask. Nothing is sent. */
     fun newContact(
         name: String, headline: String, url: String, job: Job?,
         kind: ContactKind = kindFor(headline), degree: Int = 0, tag: String = "",
+        source: String = "search", postSnippet: String = "", postUrl: String = "",
     ): Contact {
         val d = Store.data
-        val r = Rank.score(headline, degree, kind, d.profile, job, tag)
+        val r = Rank.score(
+            headline, degree, kind, d.profile, job, tag,
+            wroteHiringPost = postSnippet.isNotBlank(), namedOnPosting = source == "posting",
+            openings = Why.openingsAt(job?.company.orEmpty(), d).size,
+        )
         val tpl = pickTemplate(d.profile.noteTemplateB.isNotBlank(), d.contacts.count { it.template == "A" }, d.contacts.count { it.template == "B" })
         val base = Contact(
             id = Store.newId(), name = name, headline = headline, profileUrl = url.substringBefore("?"),
             company = job?.company.orEmpty(), jobKey = job?.key.orEmpty(), kind = kind,
             degree = degree, rank = r.score, why = r.why, template = tpl,
+            source = source, postSnippet = postSnippet, postUrl = postUrl,
             // Existing connections skip the invite step and go straight to the referral ask.
             stage = if (degree == 1) Stage.CONNECTED else Stage.SUGGESTED,
             connectedAt = if (degree == 1) System.currentTimeMillis() else 0,
         )
-        return base.copy(note = draftNote(d.profile, base, job), ask = draftAsk(d.profile, base, job))
+        return base.copy(note = draftNote(d, base, job), ask = draftAsk(d, base, job))
     }
 
     private fun pickTemplate(hasB: Boolean, a: Int, b: Int) = if (hasB && b < a) "B" else "A"
 
-    fun draftNote(p: Profile, c: Contact, job: Job?): String {
+    private fun fillFor(template: String, d: AppData, c: Contact, job: Job?): String = Templates.fill(
+        template.replace("{opening}", Why.opening(c, job, d)),
+        d.profile, c.name, Why.shortName(job?.company ?: c.company), roleOf(job), job?.url.orEmpty(), job?.matchedSkills.orEmpty(),
+    )
+
+    fun draftNote(d: AppData, c: Contact, job: Job?): String {
+        val p = d.profile
         val tpl = if (c.template == "B" && p.noteTemplateB.isNotBlank()) p.noteTemplateB else p.noteTemplateA
         if (tpl.isBlank()) return ""
-        val text = Templates.fill(tpl, p, c.name, job?.company ?: c.company, roleOf(job), job?.url.orEmpty(), job?.matchedSkills.orEmpty())
-        return Templates.fit(text, p.noteCharLimit)
+        return Templates.fit(fillFor(tpl, d, c, job), p.noteCharLimit)
     }
 
-    fun draftAsk(p: Profile, c: Contact, job: Job?): String =
-        Templates.fill(p.askTemplate, p, c.name, job?.company ?: c.company, roleOf(job), job?.url.orEmpty(), job?.matchedSkills.orEmpty())
+    fun draftAsk(d: AppData, c: Contact, job: Job?): String = fillFor(d.profile.askTemplate, d, c, job)
+
+    /**
+     * One-off upgrades when the app is updated. Nothing the user entered is removed:
+     * templates are replaced only if they are still the old defaults, and drafts are
+     * rewritten only if they are still exactly what the app generated.
+     */
+    fun migrate(d0: AppData): AppData {
+        if (d0.schema >= 1) return d0
+        var d = d0
+        val p = d.profile
+        val oldNote = p.noteTemplateA == Profile.OLD_NOTE
+        val oldAsk = p.askTemplate == Profile.OLD_ASK
+        if (oldNote || oldAsk) {
+            val jobs = d.jobs.associateBy { it.key }
+            val next = p.copy(
+                noteTemplateA = if (oldNote) Profile.DEFAULT_NOTE else p.noteTemplateA,
+                askTemplate = if (oldAsk) Profile.DEFAULT_ASK else p.askTemplate,
+            )
+            val before = d
+            d = d.copy(profile = next)
+            d = d.copy(contacts = d.contacts.map { c ->
+                val job = jobs[c.jobKey]
+                var out = c
+                if (oldNote && c.stage == Stage.SUGGESTED && c.note == draftNote(before, c, job)) out = out.copy(note = draftNote(d, c, job))
+                if (oldAsk && (c.stage == Stage.SUGGESTED || c.stage == Stage.CONNECTED) && c.ask == draftAsk(before, c, job)) out = out.copy(ask = draftAsk(d, c, job))
+                out
+            })
+        }
+        return rescoreAll(d).copy(schema = 1)
+    }
 
     fun draftFollowUp(p: Profile, c: Contact, job: Job?): String = Templates.fill(
         "Hi {firstName}, following up on my note about the {role} role at {company}. " +
@@ -268,9 +319,9 @@ object JobRunner {
                     description = det?.description.orEmpty(), criteria = det?.criteria.orEmpty(),
                     detailsFetched = det != null, status = JobStatus.SAVED,
                 )
-                Store.update { d -> d.copy(jobs = listOf(rescore(job, d.profile, defaultRole(d))) + d.jobs) }
+                Store.update { d -> d.copy(jobs = listOf(rescore(job, d.profile, defaultRole(d), TitlePrefs.of(d.jobs))) + d.jobs) }
                 val saved = Store.data.jobs.first { it.key == key }
-                det?.poster?.let { p -> Store.addContact(newContact(p.name, p.headline, p.profileUrl, saved, ContactKind.RECRUITER)) }
+                det?.poster?.let { p -> Store.addContact(newContact(p.name, p.headline, p.profileUrl, saved, ContactKind.RECRUITER, source = "posting")) }
                 if (det != null) queueEmails(listOf(saved))
                 return "Job kept: ${job.title}"
             }
@@ -286,7 +337,7 @@ object JobRunner {
             val slugName = profileUrl.trimEnd('/').substringAfterLast("/")
                 .replace(Regex("-[0-9a-f]{5,}$"), "").split("-")
                 .joinToString(" ") { it.replaceFirstChar(Char::uppercase) }
-            val c = newContact(name.ifBlank { slugName }, "", profileUrl, null)
+            val c = newContact(name.ifBlank { slugName }, "", profileUrl, null, source = "shared")
             return if (Store.addContact(c)) "Added ${c.name}. Review the suggestion in your inbox." else "${c.name} is already tracked."
         }
 

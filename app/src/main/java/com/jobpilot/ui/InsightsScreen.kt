@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.jobpilot.core.Guard
 import com.jobpilot.core.Insights
 import com.jobpilot.core.MailScan
@@ -42,7 +43,7 @@ fun InsightsScreen(vm: AppViewModel, data: AppData) {
 
     Column(Modifier.fillMaxSize()) {
         Header("Insights")
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
 
             SectionTitle("Jobs", Modifier.padding(top = 0.dp))
             Funnel(listOf("Found" to ins.jobsFound, "Kept" to ins.jobsKept, "Applied or asked" to ins.applied, "Interview" to ins.interviews))
@@ -128,11 +129,11 @@ private fun Funnel(steps: List<Pair<String, Int>>) {
             Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(132.dp))
             Box(Modifier.weight(1f).height(8.dp)) {
                 Box(
-                    Modifier.fillMaxWidth((n.toFloat() / top).coerceIn(0.01f, 1f)).height(8.dp).clip(RoundedCornerShape(2.dp))
-                        .background(if (n == 0) MaterialTheme.colorScheme.outlineVariant else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f))
+                    Modifier.fillMaxWidth((n.toFloat() / top).coerceIn(0.01f, 1f)).height(8.dp)
+                        .background(if (n == 0) MaterialTheme.colorScheme.outlineVariant else MaterialTheme.colorScheme.primary)
                 )
             }
-            Text("$n", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(44.dp).padding(start = 10.dp))
+            Text("$n", fontFamily = Mono, fontSize = 13.sp, modifier = Modifier.width(44.dp).padding(start = 10.dp))
         }
     }
 }

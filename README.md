@@ -8,9 +8,9 @@ Everything the app wants to do arrives in the **Inbox** as a card:
 
 | Card | What you decide |
 |---|---|
-| New job | Keep or skip. Kept jobs move to the Tracker. |
+| New job | Keep or skip. Each card lists why it was suggested and what counts against it. Kept jobs move to the Tracker. |
 | Find people | Opens a people search for a kept job in the LinkedIn tab. |
-| Connection request | Approve, edit the note, or skip. Suggestions are ranked: existing connections, your college, companies you worked at, then recruiters and people in the same role. |
+| Connection request | Approve, edit the note, or skip. Each card shows the evidence: their hiring post, the posting they are named on, or the openings at their company. The drafted note opens with that same reason. People who posted about hiring rank first, then existing connections, your college and past companies. |
 | Referral ask | Appears once someone has accepted. Approve, edit, or skip. |
 | Follow-up | One short follow-up if there is no reply after a few days. |
 | Recruiter email | Addresses found in job posts and hiring posts. Approve, edit, or skip. |
@@ -30,7 +30,8 @@ Approved emails are sent from the app through Gmail (with an App Password), or o
 ## Other features
 
 - **Job search**: LinkedIn's public listings (no sign-in), optionally JSearch for Indeed, Glassdoor, Naukri and company sites. Runs in the background every 12 hours by default.
-- **Match score** for each job against your skills.
+- **Match score** from the title, your skills, the years asked for, how fresh the posting is, and what you kept or skipped before. Jobs under a threshold stay out of the inbox.
+- **Hiring posts**: on a posts search in the LinkedIn tab, Grab people picks up authors of hiring posts together with what they wrote.
 - **Resume tailoring**: for a job, reorders your skills and summary around what the posting asks for and builds a one-page PDF, which is then attached to emails for that job. It rearranges what you entered; it does not invent experience.
 - **Gmail reply tracking**: a read-only inbox check that marks accepted invites, replies, interview mails, rejections and bounces. Runs on the phone; nothing is uploaded.
 - **Insights**: funnels for jobs, referrals and emails, reply rates, which template wording works better, and the full report (HTML) plus CSV export.

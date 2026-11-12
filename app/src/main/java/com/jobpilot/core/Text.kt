@@ -1,30 +1,113 @@
 package com.jobpilot.core
 
 import com.jobpilot.data.Job
+import com.jobpilot.data.JobStatus
 import com.jobpilot.data.Profile
+
+/** What the user tends to keep and skip, learned from their own decisions. */
+data class TitlePrefs(val liked: Set<String>, val disliked: Set<String>) {
+    companion object {
+        val NONE = TitlePrefs(emptySet(), emptySet())
+        private val KEPT = setOf(JobStatus.SAVED, JobStatus.APPLIED, JobStatus.REFERRAL_ASKED, JobStatus.INTERVIEW)
+
+        fun tokens(title: String): Set<String> =
+            title.lowercase().split(Regex("[^a-z0-9+#.]+")).filter { it.length > 3 }.toSet()
+
+        fun of(jobs: List<Job>): TitlePrefs {
+            val kept = HashMap<String, Int>(); val skipped = HashMap<String, Int>()
+            for (j in jobs) {
+                val into = when (j.status) { in KEPT -> kept; JobStatus.IGNORED -> skipped; else -> continue }
+                tokens(j.title).forEach { into[it] = (into[it] ?: 0) + 1 }
+            }
+            val liked = kept.filter { (t, n) -> n >= 2 && n >= 2 * (skipped[t] ?: 0) }.keys
+            val disliked = skipped.filter { (t, n) -> n >= 3 && n >= 3 * (kept[t] ?: 0) }.keys
+            return TitlePrefs(liked, disliked)
+        }
+    }
+}
 
 /** Match scoring, email extraction and message templates. Pure Kotlin, no Android deps. */
 object Matcher {
-    data class Result(val score: Int, val matched: List<String>, val missing: List<String>)
+    data class Result(
+        val score: Int, val matched: List<String>, val missing: List<String>,
+        val reasons: List<String> = emptyList(), val cautions: List<String> = emptyList(),
+    )
 
-    fun score(job: Job, profile: Profile, searchKeywords: String): Result {
+    private val YEARS = Regex("(\\d{1,2})\\s*(?:\\+|plus)?\\s*(?:-|to|\u2013)?\\s*(?:\\d{1,2})?\\s*\\+?\\s*(?:years?|yrs?)", RegexOption.IGNORE_CASE)
+    private val SENIOR = Regex("(?i)\\b(senior|sr\\.?|lead|principal|staff|architect|manager|head|director|vp)\\b")
+    private val JUNIOR = Regex("(?i)\\b(intern|internship|trainee|fresher|graduate|apprentice)\\b")
+
+    /** Smallest "N years" figure the description asks for, if it states one. */
+    fun requiredYears(description: String): Int? =
+        YEARS.findAll(description).mapNotNull { it.groupValues[1].toIntOrNull() }.filter { it in 0..20 }.minOrNull()
+
+    fun daysSince(postedAt: String, now: Long): Int? = runCatching {
+        val d = java.time.LocalDate.parse(postedAt.take(10))
+        val today = java.time.Instant.ofEpochMilli(now).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+        java.time.temporal.ChronoUnit.DAYS.between(d, today).toInt().coerceAtLeast(0)
+    }.getOrNull()
+
+    fun score(
+        job: Job, profile: Profile, searchKeywords: String,
+        prefs: TitlePrefs = TitlePrefs.NONE, now: Long = System.currentTimeMillis(),
+    ): Result {
         val skills = profile.skillList()
         val hay = (job.title + "\n" + job.description + "\n" + job.criteria).lowercase()
         val matched = skills.filter { containsTerm(hay, it) }
         val missing = skills.filterNot { containsTerm(hay, it) }
+        val reasons = mutableListOf<String>()
+        val cautions = mutableListOf<String>()
+        val hasDetails = job.description.isNotBlank()
 
         // Title relevance: share of search keywords that appear in the title.
         val kw = searchKeywords.lowercase().split(Regex("[^a-z0-9+#.]+")).filter { it.length > 1 }
         val titleHits = kw.count { job.title.lowercase().contains(it) }
         val titleScore = if (kw.isEmpty()) 0.5 else titleHits.toDouble() / kw.size
+        if (kw.isNotEmpty() && titleHits == kw.size) reasons += "Title matches \"${searchKeywords.trim()}\""
+        else if (kw.isNotEmpty() && titleHits == 0) cautions += "Title doesn't mention \"${searchKeywords.trim()}\""
 
         val skillScore = when {
-            skills.isEmpty() -> 0.5
-            job.description.isBlank() -> 0.5 // details not fetched yet
+            skills.isEmpty() || !hasDetails -> 0.5
             else -> matched.size.toDouble() / skills.size
         }
-        val score = (titleScore * 40 + skillScore * 60).toInt().coerceIn(0, 100)
-        return Result(score, matched, missing)
+        if (hasDetails && skills.isNotEmpty()) {
+            if (matched.isNotEmpty()) reasons += "Mentions ${matched.size} of your ${skills.size} skills: ${matched.take(4).joinToString(", ")}"
+            else cautions += "Mentions none of your skills"
+        }
+        var s = titleScore * 35 + skillScore * 45
+
+        // Experience asked for vs. what the user has
+        val mine = profile.yearsExperience.trim().toIntOrNull()
+        val need = if (hasDetails) requiredYears(job.description) else null
+        when {
+            need == null || mine == null -> s += 5
+            need <= mine -> { s += 10; reasons += "Asks for $need+ years, you have $mine" }
+            need == mine + 1 -> s += 4
+            else -> { s -= 12; cautions += "Asks for $need+ years, you have $mine" }
+        }
+        if (mine != null) {
+            if (mine < 4 && SENIOR.containsMatchIn(job.title)) { s -= 10; cautions += "Senior-level title" }
+            if (mine >= 2 && JUNIOR.containsMatchIn(job.title)) { s -= 10; cautions += "Entry-level title" }
+        }
+
+        // Fresh postings get more replies
+        val days = daysSince(job.postedAt, now)
+        when {
+            days == null -> s += 2
+            days <= 3 -> { s += 6; reasons += if (days == 0) "Posted today" else "Posted $days day${if (days == 1) "" else "s"} ago" }
+            days <= 10 -> s += 3
+            days > 30 -> { s -= 5; cautions += "Posted over a month ago" }
+        }
+
+        // What the user kept and skipped before
+        val tokens = TitlePrefs.tokens(job.title)
+        if (tokens.any { it in prefs.liked }) { s += 6; reasons += "Similar to jobs you kept" }
+        if (tokens.any { it in prefs.disliked }) { s -= 8; cautions += "Similar to jobs you skipped" }
+
+        if (hasDetails && Emails.extract(job.description).isNotEmpty()) { s += 3; reasons += "Recruiter email in the posting" }
+        if (!hasDetails) cautions += "Scored on the title only; open it to load the full description"
+
+        return Result(s.toInt().coerceIn(0, 100), matched, missing, reasons, cautions)
     }
 
     fun containsTerm(hay: String, term: String): Boolean {

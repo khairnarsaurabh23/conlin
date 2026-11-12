@@ -24,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.jobpilot.core.Why
 import com.jobpilot.data.AppData
 import com.jobpilot.data.Contact
 import com.jobpilot.data.EmailLead
@@ -96,19 +97,19 @@ private fun JobsList(vm: AppViewModel, data: AppData) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
         items(list, key = { it.key }) { j ->
             Column(Modifier.animateItem().clickable { vm.openJob(j.key) }) {
-                Row(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.Top) {
+                Row(Modifier.padding(horizontal = 16.dp, vertical = 11.dp), verticalAlignment = Alignment.Top) {
                     Column(Modifier.weight(1f)) {
                         Text(j.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Muted(listOf(j.company, j.location).filter { it.isNotBlank() }.joinToString(", "), maxLines = 1)
-                        Muted(
-                            listOf(j.status.label, "found ${day(j.foundAt)}", if (j.emailsFound.isNotEmpty()) "has email" else "",
-                                if (j.tailoredResume.isNotBlank()) "resume tailored" else "").filter { it.isNotBlank() }.joinToString(" · "),
-                            maxLines = 1,
+                        Label(
+                            listOf(j.status.label.lowercase(), "found ${day(j.foundAt)}", if (j.emailsFound.isNotEmpty()) "has email" else "",
+                                if (j.tailoredResume.isNotBlank()) "resume tailored" else "").filter { it.isNotBlank() }.joinToString(" | "),
+                            Modifier.padding(top = 2.dp),
                         )
                     }
                     ScoreText(j.matchScore)
                 }
-                HorizontalDivider(Modifier.padding(start = 20.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                HorizontalDivider( color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
         if (filter == JobFilter.SKIPPED && list.isNotEmpty()) item {
@@ -153,13 +154,13 @@ private fun PeopleList(vm: AppViewModel, data: AppData) {
             val job = jobs[c.jobKey]
             val isOpen = open == c.id
             Column(Modifier.animateItem().clickable { open = if (isOpen) null else c.id }) {
-                Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 11.dp)) {
                     Row(verticalAlignment = Alignment.Top) {
                         Column(Modifier.weight(1f)) {
                             Text(c.name, style = MaterialTheme.typography.titleSmall)
                             Muted(forLine(c, job), maxLines = 1)
                         }
-                        Muted(c.stage.label, color = if (c.stage == Stage.REFERRED || c.stage == Stage.REPLIED) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        Tag(c.stage.label, if (c.stage == Stage.REFERRED || c.stage == Stage.REPLIED) ok else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     val whenText = when {
                         c.repliedAt > 0 -> "replied ${day(c.repliedAt)}"
@@ -172,6 +173,10 @@ private fun PeopleList(vm: AppViewModel, data: AppData) {
                     AnimatedVisibility(isOpen) {
                         Column {
                             if (c.headline.isNotBlank()) Muted(c.headline, Modifier.padding(top = 6.dp))
+                            Label("why", Modifier.padding(top = 8.dp, bottom = 2.dp))
+                            Why.lines(c, data).forEach { line ->
+                                if (line.startsWith("No hiring signal")) Mark("!", line, warn) else Mark("+", line, ok, maxLines = 4)
+                            }
                             ButtonRow {
                                 when (c.stage) {
                                     Stage.SUGGESTED -> Btn("Approve invite", { vm.approveInvite(c.id) }, primary = true)
@@ -188,13 +193,14 @@ private fun PeopleList(vm: AppViewModel, data: AppData) {
                                 if (c.stage == Stage.SUGGESTED || c.stage == Stage.INVITED) Quiet("Already connected", { vm.setStage(c.id, Stage.CONNECTED) })
                                 Quiet("Edit messages", { editing = c })
                                 Quiet(if (job == null) "Link a job" else "Change job", { linking = c })
+                                if (c.postUrl.isNotBlank()) Quiet("Post", { vm.openUrl(c.postUrl) })
                                 Quiet("Profile", { vm.openUrl(c.profileUrl) })
                                 Quiet("Remove", { vm.deleteContact(c.id) })
                             }
                         }
                     }
                 }
-                HorizontalDivider(Modifier.padding(start = 20.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                HorizontalDivider( color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
     }
@@ -248,17 +254,17 @@ private fun EmailsList(vm: AppViewModel, data: AppData) {
         items(list, key = { it.id }) { e ->
             val isOpen = open == e.id
             Column(Modifier.animateItem().clickable { open = if (isOpen) null else e.id }) {
-                Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 11.dp)) {
                     Row(verticalAlignment = Alignment.Top) {
                         Column(Modifier.weight(1f)) {
                             Text(e.to, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Muted(listOf(e.role, e.company).filter { it.isNotBlank() }.joinToString(" at "), maxLines = 1)
                         }
                         val label = if (e.reply != ReplyKind.NONE) e.reply.label else e.status.label
-                        Muted(
+                        Tag(
                             label,
-                            color = when {
-                                e.reply == ReplyKind.INTERVIEW || e.reply == ReplyKind.REPLY -> MaterialTheme.colorScheme.primary
+                            when {
+                                e.reply == ReplyKind.INTERVIEW || e.reply == ReplyKind.REPLY -> ok
                                 e.status in problems -> MaterialTheme.colorScheme.error
                                 else -> MaterialTheme.colorScheme.onSurfaceVariant
                             }
@@ -289,7 +295,7 @@ private fun EmailsList(vm: AppViewModel, data: AppData) {
                         }
                     }
                 }
-                HorizontalDivider(Modifier.padding(start = 20.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                HorizontalDivider( color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
     }

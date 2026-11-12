@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_bg">#1F1E1C</color>
-    <color name="paper">#FAF9F6</color>
-    <color name="paper_dark">#181716</color>
+    <color name="paper">#1F1F1F</color>
+    <color name="paper_dark">#1F1F1F</color>
 </resources>

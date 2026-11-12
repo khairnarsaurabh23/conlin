@@ -1,5 +1,6 @@
 package com.jobpilot.ui
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -29,8 +30,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.jobpilot.core.Guard
 import com.jobpilot.core.JobRunner
+import com.jobpilot.core.Why
+import com.jobpilot.data.ContactKind
 import com.jobpilot.data.AppData
 import com.jobpilot.data.Contact
 import com.jobpilot.data.EmailLead
@@ -99,9 +103,18 @@ private fun buildCards(d: AppData, now: Long): List<Card> {
     if (stale > 0) review += Card.Stale(stale)
     d.jobs.filter { j -> j.status == JobStatus.SAVED && !j.peoplePrompted && d.contacts.none { it.jobKey == j.key } }
         .sortedByDescending { it.matchScore }.take(3).forEach { review += Card.FindPeople(it) }
-    val fresh = d.jobs.filter { it.status == JobStatus.NEW }.sortedByDescending { it.matchScore }
+    val allNew = d.jobs.filter { it.status == JobStatus.NEW }
+    val fresh = allNew.filter { it.matchScore >= p.minMatch }
+        .sortedWith(compareByDescending<Job> { it.matchScore }.thenByDescending { it.foundAt })
     fresh.take(MAX_JOBS).forEach { review += Card.NewJob(it) }
-    if (fresh.size > MAX_JOBS) review += Card.More("${fresh.size - MAX_JOBS} more new jobs, lower match.", "jobs")
+    val hidden = allNew.size - fresh.size
+    val queued = (fresh.size - MAX_JOBS).coerceAtLeast(0)
+    if (queued > 0 || hidden > 0) review += Card.More(
+        listOfNotNull(
+            if (queued > 0) "$queued more new jobs queued" else null,
+            if (hidden > 0) "$hidden under ${p.minMatch}% kept out of the inbox" else null,
+        ).joinToString(", "), if (hidden > 0) "jobs" else "queue"
+    )
 
     if (review.isNotEmpty()) {
         out += Card.Head("For your approval", review.count { it !is Card.More })
@@ -135,26 +148,27 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                         is Card.Head -> SectionTitle(card.title, trailing = "${card.count}")
                         is Card.SendPerson -> SendPersonCard(vm, data, card.c, card.job, now)
                         is Card.SendEmails -> Panel {
-                            Text("${card.count} approved email(s)", style = MaterialTheme.typography.titleSmall)
+                            Label("emails, approved")
+                            Text("${card.count} ready to go", style = MaterialTheme.typography.titleSmall)
                             Muted("Sent from ${data.profile.smtpUser}, a few seconds apart. ${Guard.emailsLeftToday(data, now)} left today.")
                             ButtonRow { Btn("Send now", { vm.sendApprovedSmtp() }, primary = true, enabled = !busy) }
                         }
                         is Card.SendEmail -> SendEmailCard(vm, card.e) { editEmail = card.e }
                         is Card.FollowUp -> PersonCard(
-                            card.c, card.job, "No reply in ${data.profile.followUpDays} days. Send one short follow-up?",
+                            vm, data, card.c, card.job, "follow-up", "No reply in ${data.profile.followUpDays} days. Send one short follow-up?",
                             JobRunner.draftFollowUp(data.profile, card.c, card.job),
                         ) {
                             Btn("Approve follow-up", { vm.approveFollowUp(card.c) }, primary = true)
                             Quiet("No response", { vm.setStage(card.c.id, Stage.NO_RESPONSE) })
                             Quiet("They replied", { vm.setStage(card.c.id, Stage.REPLIED) })
                         }
-                        is Card.Ask -> PersonCard(card.c, card.job, "Connected. Ask for a referral?", card.c.ask) {
+                        is Card.Ask -> PersonCard(vm, data, card.c, card.job, "referral ask", "Connected. Ask for a referral?", card.c.ask) {
                             Btn("Approve", { vm.approveAsk(card.c.id) }, primary = true)
                             Quiet("Edit", { editPerson = card.c })
                             Quiet("Skip", { vm.skipContact(card.c.id) })
                         }
                         is Card.Connect -> PersonCard(
-                            card.c, card.job, "Send a connection request?",
+                            vm, data, card.c, card.job, "connection request", "Send a connection request?",
                             card.c.note.ifBlank { "No note. A plain request will be sent." },
                         ) {
                             Btn("Approve", { vm.approveInvite(card.c.id) }, primary = true)
@@ -172,7 +186,7 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                             }
                         }
                         is Card.FindPeople -> Panel {
-                            Muted("Kept job")
+                            Label("kept job")
                             Text("${card.job.title} at ${card.job.company}", style = MaterialTheme.typography.titleSmall)
                             Muted("Find people there who could refer you.")
                             ButtonRow {
@@ -185,7 +199,7 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                             onKeep = { vm.keepJob(card.job.key) }, onSkip = { vm.skipJob(card.job.key) })
                         is Card.More -> Row(verticalAlignment = Alignment.CenterVertically) {
                             Muted(card.text, Modifier.weight(1f))
-                            if (card.id == "jobs") Quiet("Skip those under 50%", { vm.skipWeakJobs(50) })
+                            if (card.id == "jobs") Quiet("Skip those", { vm.skipWeakJobs(data.profile.minMatch) })
                         }
                         Card.Empty -> EmptyInbox(data)
                     }
@@ -233,14 +247,13 @@ private fun SetupCard(vm: AppViewModel, data: AppData) {
         "Connect Gmail for sending and reply tracking (optional)" to p.smtpConfigured,
     )
     Panel(onClick = { vm.showSettings(true) }) {
-        Text("Finish setting up", style = MaterialTheme.typography.titleSmall)
+        Label("setup")
         Gap(4)
         steps.forEach { (label, done) ->
-            Text(
-                (if (done) "Done   " else "To do   ") + label, style = MaterialTheme.typography.bodyMedium,
-                color = if (done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(vertical = 2.dp),
-            )
+            Row(Modifier.padding(vertical = 2.dp)) {
+                Text(if (done) "[x]" else "[ ]", fontFamily = Mono, fontSize = 13.sp, color = if (done) ok else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 8.dp))
+                Text(label, style = MaterialTheme.typography.bodyMedium, color = if (done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
+            }
         }
     }
 }
@@ -267,20 +280,35 @@ fun forLine(c: Contact, job: Job?): String = when {
     else -> "Not linked to a job yet"
 }
 
-/** Shared layout for approval cards about a person. */
+/** Shared layout for approval cards about a person: who, the evidence for contacting them, the draft. */
 @Composable
-private fun PersonCard(c: Contact, job: Job?, question: String, draft: String, actions: @Composable () -> Unit) {
+private fun PersonCard(
+    vm: AppViewModel, data: AppData, c: Contact, job: Job?, kind: String, question: String, draft: String,
+    actions: @Composable () -> Unit,
+) {
+    val why = remember(c, data.jobs) { Why.lines(c, data) }
     Panel {
-        Row(verticalAlignment = Alignment.Top) {
-            Column(Modifier.weight(1f)) {
-                Text(c.name, style = MaterialTheme.typography.titleSmall)
-                if (c.headline.isNotBlank()) Muted(c.headline, maxLines = 2)
-            }
-            if (c.why.isNotBlank()) Muted(c.why, Modifier.padding(start = 10.dp).fillMaxWidth(0.42f), color = MaterialTheme.colorScheme.primary)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label(kind, Modifier.weight(1f))
+            if (c.degree in 1..3) Tag(listOf("1st", "2nd", "3rd")[c.degree - 1])
+            if (c.kind == ContactKind.RECRUITER) Box(Modifier.padding(start = 6.dp)) { Tag("recruiter", MaterialTheme.colorScheme.primary) }
         }
-        Muted(forLine(c, job), Modifier.padding(top = 4.dp))
-        Text(question, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 10.dp, bottom = 6.dp))
-        if (draft.isNotBlank()) Quote(draft)
+        Text(c.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 4.dp))
+        if (c.headline.isNotBlank()) Muted(c.headline, maxLines = 2)
+        Muted(forLine(c, job), Modifier.padding(top = 2.dp))
+
+        Label("why", Modifier.padding(top = 10.dp, bottom = 2.dp))
+        why.forEach { line ->
+            if (line.startsWith("No hiring signal")) Mark("!", line, warn) else Mark("+", line, ok, maxLines = 4)
+        }
+        if (c.postUrl.isNotBlank() || job != null) Row {
+            if (c.postUrl.isNotBlank()) Quiet("View post", { vm.openUrl(c.postUrl) })
+            if (job != null) Quiet("View job", { vm.openJob(job.key) })
+            Quiet("Profile", { vm.openUrl(c.profileUrl) })
+        }
+
+        Text(question, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp, bottom = 6.dp))
+        if (draft.isNotBlank()) Quote(draft, maxLines = 6)
         ButtonRow { actions() }
     }
 }
@@ -291,7 +319,7 @@ private fun SendPersonCard(vm: AppViewModel, data: AppData, c: Contact, job: Job
     val check = if (invite) Guard.canInvite(data, now) else Guard.canMessage(data, now)
     val text = if (invite) c.note else c.ask
     Panel {
-        Muted(if (invite) "Connection request" else if (c.followUps > 0) "Follow-up message" else "Referral message")
+        Label(if (invite) "connection request" else if (c.followUps > 0) "follow-up message" else "referral message")
         Text(c.name, style = MaterialTheme.typography.titleSmall)
         Muted(forLine(c, job))
         if (text.isNotBlank()) Quote(text, Modifier.padding(top = 8.dp), maxLines = 3)
@@ -315,7 +343,7 @@ private fun SendPersonCard(vm: AppViewModel, data: AppData, c: Contact, job: Job
 @Composable
 private fun SendEmailCard(vm: AppViewModel, e: EmailLead, onEdit: () -> Unit) {
     Panel {
-        Muted("Email, approved")
+        Label("email, approved")
         Text(e.to, style = MaterialTheme.typography.titleSmall)
         Muted(e.subject, maxLines = 1)
         if (e.openedAt > 0) {
@@ -335,11 +363,11 @@ private fun SendEmailCard(vm: AppViewModel, e: EmailLead, onEdit: () -> Unit) {
 @Composable
 private fun EmailCard(e: EmailLead, onApprove: () -> Unit, onEdit: () -> Unit, onSkip: () -> Unit) {
     Panel {
-        Muted("Recruiter email")
+        Label("recruiter email")
         Text(e.to, style = MaterialTheme.typography.titleSmall)
         Muted(listOf(e.role, e.company).filter { it.isNotBlank() }.joinToString(" at "))
         if (e.context.isNotBlank()) {
-            Muted("Found in:", Modifier.padding(top = 8.dp))
+            Label("found in", Modifier.padding(top = 8.dp, bottom = 2.dp))
             Quote(e.context, maxLines = 3)
         }
         Text("Send your resume with this subject?", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 10.dp))
@@ -355,18 +383,17 @@ private fun EmailCard(e: EmailLead, onApprove: () -> Unit, onEdit: () -> Unit, o
 @Composable
 private fun JobCard(job: Job, onOpen: () -> Unit, onKeep: () -> Unit, onSkip: () -> Unit) {
     Panel(onClick = onOpen) {
-        Row(verticalAlignment = Alignment.Top) {
-            Column(Modifier.weight(1f)) {
-                Muted("New job")
-                Text(job.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Muted(listOf(job.company, job.location).filter { it.isNotBlank() }.joinToString(", "), maxLines = 1)
-            }
-            Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(start = 10.dp)) {
-                ScoreText(job.matchScore)
-                Muted("match")
-            }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label("new job", Modifier.weight(1f))
+            ScoreText(job.matchScore)
         }
-        if (job.matchedSkills.isNotEmpty()) Muted("Mentions " + job.matchedSkills.take(5).joinToString(", "), Modifier.padding(top = 6.dp), maxLines = 1)
+        Text(job.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+        Muted(listOf(job.company, job.location).filter { it.isNotBlank() }.joinToString(", "), maxLines = 1)
+        if (job.reasons.isNotEmpty() || job.cautions.isNotEmpty()) {
+            Gap(6)
+            job.reasons.take(4).forEach { Mark("+", it, ok, maxLines = 2) }
+            job.cautions.take(3).forEach { Mark("-", it, warn, maxLines = 2) }
+        }
         ButtonRow {
             Btn("Keep", onKeep, primary = true)
             Quiet("Skip", onSkip)

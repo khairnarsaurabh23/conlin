@@ -38,22 +38,22 @@ object Report {
         sb.append(
             """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>JobPilot report</title><style>
-body{font-family:Roboto,-apple-system,Segoe UI,sans-serif;margin:0;padding:18px;color:#1f1e1c;background:#faf9f6;line-height:1.45;font-size:14px}
-h1{font-family:Georgia,serif;font-weight:500;font-size:24px;margin:0 0 2px}
-h2{font-family:Georgia,serif;font-weight:500;font-size:17px;margin:28px 0 8px}
+body{font-family:Inter,Roboto,-apple-system,Segoe UI,sans-serif;margin:0;padding:18px;color:#111827;background:#fafafa;line-height:1.45;font-size:14px}
+h1{font-weight:600;font-size:20px;margin:0 0 2px}
+h2{font-family:ui-monospace,Menlo,monospace;font-weight:400;font-size:12.5px;color:#6b7280;margin:28px 0 8px}
 .sub{color:#6b6a66;font-size:12.5px}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{padding:7px 6px;text-align:left;border-bottom:1px solid #e4e2dc;vertical-align:top}
+th,td{padding:7px 6px;text-align:left;border-bottom:1px solid #e5e7eb;vertical-align:top}
 th{font-weight:500;color:#6b6a66;font-size:12px}
 td.n,th.n{text-align:right;white-space:nowrap}
-a{color:#2f5d50;text-decoration:none}.muted{color:#6b6a66}
+a{color:#2563eb;text-decoration:none}.muted{color:#6b7280}
 .kv td:first-child{color:#6b6a66}.kv td:last-child{text-align:right;font-variant-numeric:tabular-nums}
 </style></head><body>"""
         )
         sb.append("<h1>Job search report</h1><div class='sub'>${esc(p.name.ifBlank { "JobPilot" })} · ${dateFmt.format(Date(now))}</div>")
 
         fun kv(title: String, rows: List<Pair<String, String>>) {
-            sb.append("<h2>$title</h2><table class='kv'>")
+            sb.append("<h2>// ${title.lowercase()}</h2><table class='kv'>")
             rows.forEach { sb.append("<tr><td>${it.first}</td><td>${it.second}</td></tr>") }
             sb.append("</table>")
         }

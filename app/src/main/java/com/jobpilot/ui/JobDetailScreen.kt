@@ -40,7 +40,7 @@ fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHo
             Quiet("Delete", { vm.deleteJob(job.key) })
         }
         busyMsg?.let { BusyBar(it) }
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Text(job.title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(start = 12.dp)) {
@@ -64,11 +64,11 @@ fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHo
                 vm.setJobStatus(job.key, it)
             }
 
-            if (job.matchedSkills.isNotEmpty() || (job.missingSkills.isNotEmpty() && job.detailsFetched)) {
-                SectionTitle("How you match")
-                if (job.matchedSkills.isNotEmpty()) Text("Mentions " + job.matchedSkills.joinToString(", "), style = MaterialTheme.typography.bodyMedium)
-                if (job.missingSkills.isNotEmpty() && job.detailsFetched) Muted("Doesn't mention " + job.missingSkills.joinToString(", "), Modifier.padding(top = 2.dp))
-            }
+            SectionTitle("Why this job", trailing = "${job.matchScore}%")
+            job.reasons.forEach { Mark("+", it, ok) }
+            job.cautions.forEach { Mark("-", it, warn) }
+            if (job.missingSkills.isNotEmpty() && job.detailsFetched) Mark("-", "Doesn't mention " + job.missingSkills.joinToString(", "), MaterialTheme.colorScheme.onSurfaceVariant)
+            if (job.reasons.isEmpty() && job.cautions.isEmpty()) Muted("Not scored yet.")
 
             SectionTitle("Resume for this job")
             if (job.tailoredResume.isNotBlank()) {
@@ -92,7 +92,7 @@ fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHo
                         Text(c.name, style = MaterialTheme.typography.bodyMedium)
                         if (c.why.isNotBlank()) Muted(c.why, maxLines = 1)
                     }
-                    Muted(c.stage.label)
+                    Tag(c.stage.label)
                 }
             }
             if (people.size > 6) Muted("And ${people.size - 6} more in Tracker.")

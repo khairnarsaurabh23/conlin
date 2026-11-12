@@ -18,6 +18,7 @@ import com.jobpilot.core.Rank
 import com.jobpilot.core.Report
 import com.jobpilot.core.ResumePdf
 import com.jobpilot.core.Tailor
+import com.jobpilot.core.Why
 import com.jobpilot.data.ActionKind
 import com.jobpilot.data.AppData
 import com.jobpilot.data.Contact
@@ -42,7 +43,11 @@ import java.util.concurrent.TimeUnit
 
 enum class Tab(val title: String) { INBOX("Inbox"), TRACKER("Tracker"), LINKEDIN("LinkedIn"), INSIGHTS("Insights") }
 
-data class CapturedPerson(val name: String, val headline: String, val url: String, val degree: Int = 0)
+data class CapturedPerson(
+    val name: String, val headline: String, val url: String, val degree: Int = 0,
+    /** Text of the hiring post this person wrote, when captured from a posts page. */
+    val post: String = "", val postUrl: String = "",
+)
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val ctx: Context get() = getApplication<Application>()
@@ -127,16 +132,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun rescoreAll() = edit {
-        Store.update { d ->
-            val kw = d.searches.associate { it.id to it.keywords }
-            d.copy(jobs = d.jobs.map { JobRunner.rescore(it, d.profile, kw[it.searchId] ?: JobRunner.defaultRole(d)) })
-        }
+        Store.update { d -> JobRunner.rescoreAll(d) }
     }
 
     // ---------------- Jobs ----------------
 
-    fun keepJob(key: String) = edit { Store.updateJob(key) { it.copy(status = JobStatus.SAVED) } }
-    fun skipJob(key: String) = edit { Store.updateJob(key) { it.copy(status = JobStatus.IGNORED) } }
+    // Keeping and skipping teaches the scorer, so the remaining jobs are re-scored each time.
+    fun keepJob(key: String) = edit {
+        Store.update { d -> JobRunner.rescoreAll(d.copy(jobs = d.jobs.map { if (it.key == key) it.copy(status = JobStatus.SAVED) else it })) }
+    }
+    fun skipJob(key: String) = edit {
+        Store.update { d -> JobRunner.rescoreAll(d.copy(jobs = d.jobs.map { if (it.key == key) it.copy(status = JobStatus.IGNORED) else it })) }
+    }
     fun setJobStatus(key: String, s: JobStatus) = edit { Store.updateJob(key) { it.copy(status = s) } }
     fun setJobNotes(key: String, n: String) = edit { Store.updateJob(key) { it.copy(notes = n) } }
     fun dismissPeoplePrompt(key: String) = edit { Store.updateJob(key) { it.copy(peoplePrompted = true) } }
@@ -216,7 +223,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 continue
             }
-            if (Store.addContact(JobRunner.newContact(cp.name, cp.headline, cp.url, job, degree = cp.degree, tag = tag))) added++
+            val snippet = Why.snippet(cp.post)
+            val c = JobRunner.newContact(
+                cp.name, cp.headline, cp.url, job, degree = cp.degree, tag = tag,
+                source = if (snippet.isNotBlank()) "post" else "search", postSnippet = snippet, postUrl = cp.postUrl,
+            )
+            if (Store.addContact(c)) added++
         }
         toast(buildString {
             append("$added suggestion(s) added to your inbox")
@@ -275,16 +287,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun redraft(c: Contact) = edit {
         val job = Store.data.jobs.firstOrNull { it.key == c.jobKey }
-        val p = Store.data.profile
-        Store.updateContact(c.id) { it.copy(note = JobRunner.draftNote(p, it, job), ask = JobRunner.draftAsk(p, it, job)) }
+        val d = Store.data
+        Store.updateContact(c.id) { it.copy(note = JobRunner.draftNote(d, it, job), ask = JobRunner.draftAsk(d, it, job)) }
     }
 
     fun linkContactToJob(c: Contact, job: Job) = edit {
-        val p = Store.data.profile
+        val d = Store.data
         Store.updateContact(c.id) {
             val linked = it.copy(jobKey = job.key, company = job.company)
-            val r = Rank.score(linked.headline, linked.degree, linked.kind, p, job)
-            linked.copy(rank = r.score, why = r.why, note = JobRunner.draftNote(p, linked, job), ask = JobRunner.draftAsk(p, linked, job))
+            val r = Rank.score(
+                linked.headline, linked.degree, linked.kind, d.profile, job,
+                wroteHiringPost = linked.postSnippet.isNotBlank(), namedOnPosting = linked.source == "posting",
+                openings = Why.openingsAt(job.company, d).size,
+            )
+            linked.copy(rank = r.score, why = r.why, note = JobRunner.draftNote(d, linked, job), ask = JobRunner.draftAsk(d, linked, job))
         }
     }
 

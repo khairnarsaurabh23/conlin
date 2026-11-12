@@ -2,6 +2,7 @@ package com.jobpilot.core
 
 import com.jobpilot.data.ActionKind
 import com.jobpilot.data.AppData
+import com.jobpilot.data.Contact
 import com.jobpilot.data.ContactKind
 import com.jobpilot.data.EmailStatus
 import com.jobpilot.data.Job
@@ -106,22 +107,133 @@ object Rank {
 
     fun score(
         headline: String, degree: Int, kind: ContactKind, p: Profile, job: Job?, tag: String = "",
+        wroteHiringPost: Boolean = false, namedOnPosting: Boolean = false, openings: Int = 0,
     ): Result {
         val h = headline.lowercase()
         var s = 0
         val why = mutableListOf<String>()
+        if (wroteHiringPost) { s += 35; why += "Posted about hiring" }
+        if (namedOnPosting) { s += 30; why += "Hiring contact" }
         if (degree == 1) { s += 40; why += "Already connected" }
         if (p.college.isNotBlank() && (tag == "alumni" || h.contains(p.college.lowercase()))) { s += 30; why += "Same college" }
         val ex = p.pastCompanyList().firstOrNull { it.length > 2 && h.contains(it.lowercase()) }
         if (ex != null || tag == "colleague") { s += 30; why += "Worked at ${ex ?: "a company you did"}" }
         if (degree == 2) { s += 15; why += "2nd-degree connection" }
-        if (kind == ContactKind.RECRUITER) { s += 20; why += "Recruits for this company" }
+        if (kind == ContactKind.RECRUITER && !namedOnPosting) { s += 20; why += "Recruiter" }
+        if (Regex("(?i)\\bhiring\\b").containsMatchIn(headline)) { s += 10; why += "Headline says hiring" }
         if (job != null) {
             val words = job.title.lowercase().split(Regex("[^a-z0-9+#.]+")).filter { it.length > 3 }
             if (words.any { h.contains(it) }) { s += 15; why += "Similar role" }
             if (job.company.length > 2 && h.contains(job.company.lowercase())) s += 10
         }
-        return Result(s, why.take(2).joinToString(" · "))
+        s += (openings * 4).coerceAtMost(12)
+        return Result(s, why.take(2).joinToString(" \u00b7 "))
+    }
+}
+
+/**
+ * The evidence behind a suggestion: did this person post about hiring, are they named on a
+ * posting, does their company have openings. Shown on the card and used to open the message.
+ */
+object Why {
+    private val HIRING = Regex(
+        "(?i)(we(['\u2019]| a)re hiring|is hiring|now hiring|hiring for|hiring an?\\b|looking for an?\\b|looking to hire|" +
+            "open (role|position)s?|job opening|opening for|openings? (for|at|in)|join (our|my) team|vacanc|" +
+            "send (me |us )?(your |ur )?(cv|resume)|share (your |ur )?(cv|resume)|drop (your |ur )?(cv|resume)|dm me|referr)"
+    )
+
+    fun looksLikeHiring(text: String): Boolean = HIRING.containsMatchIn(text)
+
+    /** The sentence or two starting at the hiring phrase, without the post's header clutter. */
+    fun snippet(postText: String, max: Int = 220): String {
+        val t = postText.replace(Regex("\\s+"), " ").trim()
+        val m = HIRING.find(t) ?: return ""
+        // Back up to the start of the sentence the phrase sits in (at most ~100 characters).
+        var from = m.range.first
+        val floor = (from - 100).coerceAtLeast(0)
+        var i = from - 1
+        while (i > floor) {
+            val ch = t[i]
+            if ((ch == '.' || ch == '!' || ch == '?' || ch == '\u2022' || ch == '|') && t[i + 1] == ' ') break
+            i--
+        }
+        from = if (i > floor) i + 2 else from
+        var to = (from + max).coerceAtMost(t.length)
+        if (to < t.length) to = t.lastIndexOf(' ', to).let { if (it > m.range.last) it else to }
+        return t.substring(from, to).trim() + (if (to < t.length) "..." else "")
+    }
+
+    /** "Acme Technologies Pvt. Ltd." -> "Acme Technologies", for use in sentences. */
+    fun shortName(company: String): String =
+        company.replace(Regex("(?i)[,\\s]+(pvt\\.?|private|ltd\\.?|limited|inc\\.?|llc|llp|corp\\.?|co\\.)(?=[,\\s.]|$)"), "").trim().trimEnd(',', '.')
+            .ifBlank { company }
+
+    /** Scores at or above this count as a real match when describing a company's openings. */
+    private const val GOOD = 40
+
+    private fun norm(company: String) = company.lowercase()
+        .replace(Regex("\\b(pvt|private|ltd|limited|inc|llc|llp|corp|corporation|technologies|technology|solutions|india)\\b\\.?"), "")
+        .replace(Regex("[^a-z0-9]+"), "")
+
+    /** Open jobs at the same company, best match first. */
+    fun openingsAt(company: String, d: AppData): List<Job> {
+        val n = norm(company)
+        if (n.length < 2) return emptyList()
+        return d.jobs.filter { it.status != JobStatus.IGNORED && it.status != JobStatus.REJECTED && norm(it.company) == n }
+            .sortedByDescending { it.matchScore }
+    }
+
+    private fun role(job: Job?) = job?.title?.split(Regex("\\s[-|]\\s|[(,]"))?.first()?.trim().orEmpty()
+
+    /** Lines for the card, strongest evidence first. */
+    fun lines(c: Contact, d: AppData): List<String> {
+        val job = d.jobs.firstOrNull { it.key == c.jobKey }
+        val full = job?.company ?: c.company
+        val company = shortName(full)
+        val out = mutableListOf<String>()
+        if (c.postSnippet.isNotBlank()) out += "Posted about hiring: \"${c.postSnippet}\""
+        if (c.source == "posting" && job != null) {
+            val days = Matcher.daysSince(job.postedAt, System.currentTimeMillis())
+            out += "Named as the hiring contact on the ${role(job)} posting" + when (days) {
+                null -> ""; 0 -> ", posted today"; else -> ", posted $days day${if (days == 1) "" else "s"} ago"
+            }
+        }
+        if (Regex("(?i)\\bhiring\\b").containsMatchIn(c.headline)) out += "Their headline says they are hiring"
+        val open = openingsAt(full, d)
+        val good = open.filter { it.matchScore >= GOOD || it.key == c.jobKey }
+        if (good.isNotEmpty()) {
+            val list = good.take(3).joinToString(", ") { "${role(it)} (${it.matchScore}%)" }
+            out += if (good.size == 1) "$company has an opening that matches you: $list"
+            else "$company has ${good.size} openings that match you: $list"
+        } else if (open.isNotEmpty()) out += "$company has ${open.size} opening(s) in your searches, none a close match"
+        val signal = out.isNotEmpty()
+        if (c.degree == 1) out += "You are already connected"
+        if (c.why.isNotBlank()) c.why.split(" \u00b7 ").filter { it !in setOf("Posted about hiring", "Hiring contact", "Already connected", "Headline says hiring") }
+            .takeIf { it.isNotEmpty() }?.let { out += it.joinToString(", ") }
+        if (!signal) out += if (company.isNotBlank()) "No hiring signal found. Suggested from your search of people at $company."
+        else "No hiring signal found, and no company or job is linked yet."
+        return out
+    }
+
+    /** True when there is concrete evidence (a post, a posting, or openings) behind the suggestion. */
+    fun hasSignal(c: Contact, d: AppData): Boolean =
+        c.postSnippet.isNotBlank() || c.source == "posting" || openingsAt(d.jobs.firstOrNull { it.key == c.jobKey }?.company ?: c.company, d).isNotEmpty()
+
+    /** Opening clause for messages, e.g. "I saw your post about hiring for Android Developer at Acme". No full stop. */
+    fun opening(c: Contact, job: Job?, d: AppData): String {
+        val full = job?.company ?: c.company
+        val company = shortName(full)
+        val r = role(job)
+        val at = if (company.isNotBlank()) " at $company" else ""
+        val good = openingsAt(full, d).count { it.matchScore >= GOOD || it.key == c.jobKey }
+        return when {
+            c.postSnippet.isNotBlank() -> "I saw your post about hiring" + (if (r.isNotBlank()) " for $r" else "") + at
+            c.source == "posting" && job != null -> "I saw you're the hiring contact for the $r opening$at"
+            job != null && good > 1 -> "I noticed $company has $good openings in my field, including $r"
+            job != null -> "I noticed $company has an opening for $r"
+            company.isNotBlank() -> "I'm interested in opportunities at $company"
+            else -> "I came across your profile"
+        }
     }
 }
 

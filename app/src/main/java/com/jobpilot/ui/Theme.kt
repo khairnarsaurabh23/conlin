@@ -13,76 +13,85 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /*
- * Paper-and-ink look: warm off-white, near-black text, hairline borders, one muted green accent.
- * Serif for titles, the system sans for everything else. No gradients, shadows or tinted surfaces.
+ * Developer-tool look: neutral greys, 1px borders, square corners, one blue for links and
+ * selection. Sans for reading, monospace for labels, counts and anything tabular.
+ * Green and amber are only used the way a diff uses them: for and against.
  */
-private val LightScheme = lightColorScheme(
-    primary = Color(0xFF2F5D50), onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFE3ECE8), onPrimaryContainer = Color(0xFF1C3A32),
-    secondary = Color(0xFF2F5D50), onSecondary = Color(0xFFFFFFFF),
-    secondaryContainer = Color(0xFFEDEBE5), onSecondaryContainer = Color(0xFF1F1E1C),
-    tertiary = Color(0xFF8A5A14),
-    background = Color(0xFFFAF9F6), onBackground = Color(0xFF1F1E1C),
-    surface = Color(0xFFFFFFFF), onSurface = Color(0xFF1F1E1C),
-    surfaceVariant = Color(0xFFF1EFEA), onSurfaceVariant = Color(0xFF6B6A66),
+private val Dark = darkColorScheme(
+    primary = Color(0xFF93C5FD), onPrimary = Color(0xFF0B1B2B),
+    primaryContainer = Color(0xFF233041), onPrimaryContainer = Color(0xFFD6E8FF),
+    secondary = Color(0xFF8FD19E), onSecondary = Color(0xFF0E2415),
+    secondaryContainer = Color(0xFF2E2E2E), onSecondaryContainer = Color(0xFFEDEDED),
+    tertiary = Color(0xFFE5C07B),
+    background = Color(0xFF1F1F1F), onBackground = Color(0xFFEDEDED),
+    surface = Color(0xFF262626), onSurface = Color(0xFFEDEDED),
+    surfaceVariant = Color(0xFF2E2E2E), onSurfaceVariant = Color(0xFF9CA3AF),
+    surfaceTint = Color(0xFF262626),
+    surfaceContainerLowest = Color(0xFF262626), surfaceContainerLow = Color(0xFF262626),
+    surfaceContainer = Color(0xFF262626), surfaceContainerHigh = Color(0xFF2B2B2B),
+    surfaceContainerHighest = Color(0xFF2E2E2E),
+    outline = Color(0xFF5A5A5A), outlineVariant = Color(0xFF3A3A3A),
+    error = Color(0xFFF28B82), onError = Color(0xFF3A0F0B),
+    inverseSurface = Color(0xFFEDEDED), inverseOnSurface = Color(0xFF1F1F1F), inversePrimary = Color(0xFF2563EB),
+)
+
+private val Light = lightColorScheme(
+    primary = Color(0xFF2563EB), onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFE5EDFF), onPrimaryContainer = Color(0xFF12306E),
+    secondary = Color(0xFF15803D), onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFF3F4F6), onSecondaryContainer = Color(0xFF111827),
+    tertiary = Color(0xFFB45309),
+    background = Color(0xFFFAFAFA), onBackground = Color(0xFF111827),
+    surface = Color(0xFFFFFFFF), onSurface = Color(0xFF111827),
+    surfaceVariant = Color(0xFFF3F4F6), onSurfaceVariant = Color(0xFF6B7280),
     surfaceTint = Color(0xFFFFFFFF),
     surfaceContainerLowest = Color(0xFFFFFFFF), surfaceContainerLow = Color(0xFFFFFFFF),
     surfaceContainer = Color(0xFFFFFFFF), surfaceContainerHigh = Color(0xFFFFFFFF),
-    surfaceContainerHighest = Color(0xFFF1EFEA),
-    outline = Color(0xFFB9B6AE), outlineVariant = Color(0xFFE4E2DC),
-    error = Color(0xFF9E3B32), onError = Color(0xFFFFFFFF),
-    inverseSurface = Color(0xFF2A2927), inverseOnSurface = Color(0xFFF4F2EC), inversePrimary = Color(0xFF9CCDBD),
+    surfaceContainerHighest = Color(0xFFF3F4F6),
+    outline = Color(0xFF9CA3AF), outlineVariant = Color(0xFFE5E7EB),
+    error = Color(0xFFB91C1C), onError = Color(0xFFFFFFFF),
+    inverseSurface = Color(0xFF1F1F1F), inverseOnSurface = Color(0xFFEDEDED), inversePrimary = Color(0xFF93C5FD),
 )
 
-private val DarkScheme = darkColorScheme(
-    primary = Color(0xFF9CCDBD), onPrimary = Color(0xFF10261F),
-    primaryContainer = Color(0xFF24362F), onPrimaryContainer = Color(0xFFCFE6DD),
-    secondary = Color(0xFF9CCDBD), onSecondary = Color(0xFF10261F),
-    secondaryContainer = Color(0xFF2C2B28), onSecondaryContainer = Color(0xFFECEAE4),
-    tertiary = Color(0xFFD9B26A),
-    background = Color(0xFF181716), onBackground = Color(0xFFECEAE4),
-    surface = Color(0xFF201F1D), onSurface = Color(0xFFECEAE4),
-    surfaceVariant = Color(0xFF2A2927), onSurfaceVariant = Color(0xFFA3A19A),
-    surfaceTint = Color(0xFF201F1D),
-    surfaceContainerLowest = Color(0xFF201F1D), surfaceContainerLow = Color(0xFF201F1D),
-    surfaceContainer = Color(0xFF201F1D), surfaceContainerHigh = Color(0xFF262523),
-    surfaceContainerHighest = Color(0xFF2A2927),
-    outline = Color(0xFF55534E), outlineVariant = Color(0xFF34322F),
-    error = Color(0xFFE39A91), onError = Color(0xFF3A100C),
-    inverseSurface = Color(0xFFECEAE4), inverseOnSurface = Color(0xFF1F1E1C), inversePrimary = Color(0xFF2F5D50),
-)
-
-private val Serif = FontFamily.Serif
+val Mono = FontFamily.Monospace
 
 private val AppType = Typography().let { t ->
     t.copy(
-        headlineSmall = TextStyle(fontFamily = Serif, fontWeight = FontWeight.Normal, fontSize = 26.sp, lineHeight = 32.sp),
-        titleLarge = TextStyle(fontFamily = Serif, fontWeight = FontWeight.Normal, fontSize = 21.sp, lineHeight = 27.sp),
-        titleMedium = TextStyle(fontFamily = Serif, fontWeight = FontWeight.Normal, fontSize = 18.sp, lineHeight = 24.sp),
-        titleSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 15.sp, lineHeight = 21.sp),
+        headlineSmall = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 20.sp, lineHeight = 26.sp),
+        titleLarge = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 19.sp, lineHeight = 25.sp),
+        titleMedium = TextStyle(fontWeight = FontWeight.Medium, fontSize = 16.sp, lineHeight = 22.sp),
+        titleSmall = TextStyle(fontWeight = FontWeight.Medium, fontSize = 15.sp, lineHeight = 20.sp),
         bodyLarge = t.bodyLarge.copy(fontSize = 15.sp, lineHeight = 22.sp, letterSpacing = 0.sp),
         bodyMedium = t.bodyMedium.copy(fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.sp),
         bodySmall = t.bodySmall.copy(fontSize = 13.sp, lineHeight = 18.sp, letterSpacing = 0.sp),
-        labelLarge = t.labelLarge.copy(fontSize = 14.sp, letterSpacing = 0.sp),
+        labelLarge = t.labelLarge.copy(fontSize = 13.sp, letterSpacing = 0.sp),
+        labelSmall = TextStyle(fontFamily = Mono, fontSize = 11.5.sp, lineHeight = 16.sp),
     )
 }
 
 @Composable
-fun JobPilotTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) DarkScheme else LightScheme,
-        typography = AppType,
-        content = content,
-    )
+fun isDark(mode: String): Boolean = when (mode) {
+    "light" -> false
+    "system" -> isSystemInDarkTheme()
+    else -> true
 }
 
-/** Muted amber used for cautions (limits, follow-ups). */
+@Composable
+fun JobPilotTheme(mode: String, content: @Composable () -> Unit) {
+    MaterialTheme(colorScheme = if (isDark(mode)) Dark else Light, typography = AppType, content = content)
+}
+
+/** Amber: cautions, limits, things counting against. */
 val warn: Color
     @Composable get() = MaterialTheme.colorScheme.tertiary
 
+/** Green: things counting for. */
+val ok: Color
+    @Composable get() = MaterialTheme.colorScheme.secondary
+
 @Composable
 fun scoreColor(score: Int): Color = when {
-    score >= 70 -> MaterialTheme.colorScheme.primary
+    score >= 70 -> ok
     score >= 45 -> MaterialTheme.colorScheme.onSurface
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }

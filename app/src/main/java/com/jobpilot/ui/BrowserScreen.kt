@@ -35,10 +35,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.jobpilot.MainActivity
 import com.jobpilot.core.Emails
 import com.jobpilot.core.JobRunner
+import com.jobpilot.core.Why
 import com.jobpilot.data.AppData
 import com.jobpilot.data.Stage
 import com.jobpilot.data.Store
@@ -61,9 +63,12 @@ import java.net.URLEncoder
 private const val PEOPLE_JS = """
 (function(){
  var out=[],seen={};
+ var HIRE=/hiring|looking for a|looking to hire|open role|open position|opening|join our team|join my team|vacanc|send (me |us )?(your |ur )?(cv|resume)|share (your |ur )?(cv|resume)|referr/i;
+ var onPosts=/\/search\/results\/content|\/feed|\/posts\/|recent-activity/.test(location.href);
+ function clean(u){return (u||'').split('?')[0].replace(/\/$/,'');}
  var as=document.querySelectorAll('a[href*="/in/"]');
  for(var i=0;i<as.length;i++){
-   var a=as[i]; var h=(a.href||'').split('?')[0].replace(/\/$/,'');
+   var a=as[i]; var h=clean(a.href);
    if(!/linkedin\.com\/in\/[^\/]+$/.test(h)) continue;
    if(/\/in\/me$/.test(h)) continue;
    if(seen[h]) continue;
@@ -82,7 +87,21 @@ private const val PEOPLE_JS = """
      if(L.indexOf(name)===0||/^([•·]|1st|2nd|3rd|Connect|Message|Follow|View|Pending)/i.test(L)||L.length<4) continue;
      head=L; break;
    }
-   seen[h]=1; out.push({name:name,headline:head.slice(0,160),url:h,degree:deg});
+   var post='',purl='';
+   if(onPosts){
+     var pb=a.closest('[data-urn*="activity"],[data-activity-urn],[data-id*="activity"],.feed-shared-update-v2,article');
+     if(!pb){ var el=a.parentElement; for(var d=0;d<10&&el;d++){ var tl=(el.innerText||'').length; if(tl>6000) break; if(tl>=250){pb=el;break;} el=el.parentElement; } }
+     if(pb){
+       var first=pb.querySelector('a[href*="/in/"]');
+       var pt=(pb.innerText||'');
+       if(first&&clean(first.href)==h&&pt.length<8000&&HIRE.test(pt)){
+         post=pt.replace(/\s+/g,' ').slice(0,1500);
+         var urn=(pb.getAttribute('data-urn')||pb.getAttribute('data-activity-urn')||pb.getAttribute('data-id')||'').match(/urn:li:activity:\d+/);
+         purl=urn?('https://www.linkedin.com/feed/update/'+urn[0]+'/'):location.href.split('#')[0];
+       }
+     }
+   }
+   seen[h]=1; out.push({name:name,headline:head.slice(0,160),url:h,degree:deg,post:post,postUrl:purl});
  }
  return JSON.stringify(out);
 })()
@@ -159,10 +178,10 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
     val p = data.profile
 
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (loading) "Loading" else title, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f),
+                if (loading) "loading..." else title, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                fontFamily = Mono, fontSize = 13.sp, modifier = Modifier.weight(1f),
             )
             Quiet("Reload", { webView.reload() })
             Quiet("More", { menu = true })
@@ -231,6 +250,7 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
                         CapturedPerson(
                             o["name"]?.jsonPrimitive?.content.orEmpty(), o["headline"]?.jsonPrimitive?.content.orEmpty(),
                             o["url"]?.jsonPrimitive?.content.orEmpty(), o["degree"]?.jsonPrimitive?.intOrNull ?: 0,
+                            o["post"]?.jsonPrimitive?.content.orEmpty(), o["postUrl"]?.jsonPrimitive?.content.orEmpty(),
                         )
                     }.filter { it.url.isNotBlank() }
                     // New people, plus invited people who now show as 1st-degree (they accepted).
@@ -238,7 +258,9 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
                         val known = data.contacts.firstOrNull { Store.sameProfile(it.profileUrl, cp.url) }
                         known == null || (cp.degree == 1 && (known.stage == Stage.INVITED || known.stage == Stage.APPROVED || known.stage == Stage.SUGGESTED))
                     }
-                    if (useful.isEmpty()) vm.toast("No new people on this page. Open a people search first.") else people = useful
+                    // People who wrote a hiring post come first.
+                    if (useful.isEmpty()) vm.toast("No new people on this page. Open a people search or hiring posts first.")
+                    else people = useful.sortedByDescending { it.post.isNotBlank() }
                 }
             }, Modifier.weight(1f).padding(end = 6.dp))
             Btn("Grab emails", {
@@ -274,6 +296,8 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
                             Column {
                                 Text(cp.name + if (cp.degree > 0) "  (${cp.degree}${listOf("st", "nd", "rd")[cp.degree - 1]})" else "", style = MaterialTheme.typography.bodyMedium)
                                 if (cp.headline.isNotBlank()) Muted(cp.headline, maxLines = 2)
+                                val snip = remember(cp.post) { Why.snippet(cp.post, 140) }
+                                if (snip.isNotBlank()) Muted("Hiring post: $snip", maxLines = 3, color = MaterialTheme.colorScheme.primary)
                             }
                         }
                     }

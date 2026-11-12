@@ -42,7 +42,7 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
         Header("Settings", onBack = { vm.showSettings(false) }) {
             Quiet("Save", { save() }, enabled = dirty, color = MaterialTheme.colorScheme.onSurface)
         }
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
 
             SectionTitle("Jobs you want", Modifier.padding(top = 0.dp))
             data.searches.forEach { s ->
@@ -105,7 +105,7 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
             NumField("Note length limit (200 on free accounts, 300 on Premium)", p.noteCharLimit) { p = p.copy(noteCharLimit = it.coerceIn(100, 300)) }
             Field("Referral message, sent after they accept", p.askTemplate, lines = 6) { p = p.copy(askTemplate = it) }
             NumField("Follow up after N days without a reply", p.followUpDays) { p = p.copy(followUpDays = it.coerceIn(2, 30)) }
-            Muted("You can use {firstName} {company} {role} {jobUrl} {myName} {myHeadline} {myEmail} {myPhone} {myLinkedIn} {years} {skills} {topSkills}")
+            Muted("{opening} becomes the reason for writing: their hiring post, the posting they are named on, or the openings at their company. Also available: {firstName} {company} {role} {jobUrl} {myName} {myHeadline} {myEmail} {myPhone} {myLinkedIn} {years} {skills} {topSkills}")
 
             SectionTitle("Recruiter emails")
             Field("Subject", p.emailSubjectA) { p = p.copy(emailSubjectA = it) }
@@ -129,6 +129,13 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
                 NumField("Port", p.smtpPort, Modifier.weight(1f).padding(start = 6.dp)) { p = p.copy(smtpPort = it) }
             }
             Field("IMAP server", p.imapHost) { p = p.copy(imapHost = it.trim()) }
+
+            SectionTitle("Job suggestions")
+            NumField("Keep jobs under this match % out of the inbox", p.minMatch) { p = p.copy(minMatch = it.coerceIn(0, 90)) }
+            Muted("Scoring looks at the title, your skills, years asked for, how fresh the posting is, and what you kept or skipped before.")
+
+            SectionTitle("Appearance")
+            Seg(listOf("dark", "light", "system"), p.theme, { it }) { p = p.copy(theme = it) }
 
             SectionTitle("Job sources")
             Toggle("LinkedIn public listings", p.useLinkedIn, "No sign-in involved.") { p = p.copy(useLinkedIn = it) }

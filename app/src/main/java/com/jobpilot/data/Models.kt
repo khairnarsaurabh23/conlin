@@ -60,6 +60,10 @@ data class Profile(
     val autoCheckEnabled: Boolean = true,
     val autoCheckHours: Int = 12,
     val detailFetchLimit: Int = 15,
+    /** New jobs scoring below this are kept out of the inbox (still listed in the Tracker). */
+    val minMatch: Int = 40,
+    /** "dark", "light" or "system". */
+    val theme: String = "dark",
 ) {
     fun skillList(): List<String> = splitList(skills)
     fun pastCompanyList(): List<String> = splitList(pastCompanies)
@@ -70,10 +74,20 @@ data class Profile(
         fun splitList(s: String): List<String> =
             s.split(",", ";", "\n").map { it.trim() }.filter { it.isNotEmpty() }
 
+        // {opening} is filled with the concrete reason for writing: their hiring post, the posting
+        // they are named on, or the openings at their company.
         const val DEFAULT_NOTE =
+            "Hi {firstName}, {opening}. I work with {topSkills} and would like to connect."
+        const val DEFAULT_ASK =
+            "Hi {firstName}, thanks for connecting. {opening}. I'm applying, and I have {years} of experience with " +
+                "{topSkills}. If it looks like a reasonable fit, would you be open " +
+                "to referring me or pointing me to the right person? I can send my resume. Thanks either way.\n{myName}"
+
+        /** Defaults shipped in 2.0, recognised so untouched templates can be upgraded. */
+        const val OLD_NOTE =
             "Hi {firstName}, I came across the {role} opening at {company} and your profile. " +
                 "I work with {topSkills} and would like to connect."
-        const val DEFAULT_ASK =
+        const val OLD_ASK =
             "Hi {firstName}, thanks for connecting. I'm applying for the {role} role at {company}. " +
                 "I have {years} of experience with {topSkills}. If it looks like a reasonable fit, would you be open " +
                 "to referring me or pointing me to the right person? I can send my resume. Thanks either way.\n{myName}"
@@ -162,6 +176,9 @@ data class Job(
     val tailoredSummary: String = "",
     /** File name of the tailored resume PDF in app storage (empty = none). */
     val tailoredResume: String = "",
+    /** Why this job was suggested, and what to be careful about. Filled by scoring. */
+    val reasons: List<String> = emptyList(),
+    val cautions: List<String> = emptyList(),
 )
 
 @Serializable
@@ -209,6 +226,11 @@ data class Contact(
     val repliedAt: Long = 0,
     val followUps: Int = 0,
     val notes: String = "",
+    /** Where the suggestion came from: "posting" (named on a job page), "post" (wrote a hiring post), "search", "shared". */
+    val source: String = "",
+    /** Excerpt of their hiring post, when they wrote one. */
+    val postSnippet: String = "",
+    val postUrl: String = "",
 )
 
 @Serializable
@@ -296,4 +318,6 @@ data class AppData(
     val actions: List<OutreachAction> = emptyList(),
     val safety: Safety = Safety(),
     val mailScan: MailScanLog = MailScanLog(),
+    /** Data version, bumped by one-off upgrades. */
+    val schema: Int = 0,
 )
