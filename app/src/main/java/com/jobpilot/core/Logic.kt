@@ -183,7 +183,15 @@ object Why {
             .sortedByDescending { it.matchScore }
     }
 
-    private fun role(job: Job?) = job?.title?.split(Regex("\\s[-|]\\s|[(,]"))?.first()?.trim().orEmpty()
+    /** "Python Developer – Web development + Agentic AI (Remote)" -> "Python Developer". */
+    fun shortRole(title: String?): String {
+        val t = title.orEmpty().split(Regex("\\s[-\u2013\u2014|:/+]\\s|[(,\\[]")).first().trim()
+        if (t.length <= 42) return t
+        val cut = t.take(42)
+        return cut.substring(0, cut.lastIndexOf(' ').takeIf { it > 15 } ?: 42).trim()
+    }
+
+    private fun role(job: Job?) = shortRole(job?.title)
 
     /** Lines for the card, strongest evidence first. */
     fun lines(c: Contact, d: AppData): List<String> {
@@ -219,16 +227,21 @@ object Why {
     fun hasSignal(c: Contact, d: AppData): Boolean =
         c.postSnippet.isNotBlank() || c.source == "posting" || openingsAt(d.jobs.firstOrNull { it.key == c.jobKey }?.company ?: c.company, d).isNotEmpty()
 
-    /** Opening clause for messages, e.g. "I saw your post about hiring for Android Developer at Acme". No full stop. */
-    fun opening(c: Contact, job: Job?, d: AppData): String {
+    /**
+     * Opening clause for messages, e.g. "I saw your post about hiring for Android Developer at Acme".
+     * No full stop. [short] gives a tighter wording for when the note would not fit.
+     */
+    fun opening(c: Contact, job: Job?, d: AppData, short: Boolean = false): String {
         val full = job?.company ?: c.company
         val company = shortName(full)
         val r = role(job)
         val at = if (company.isNotBlank()) " at $company" else ""
         val good = openingsAt(full, d).count { it.matchScore >= GOOD || it.key == c.jobKey }
         return when {
+            c.postSnippet.isNotBlank() && short -> "I saw your hiring post" + if (r.isNotBlank()) " for $r" else at
             c.postSnippet.isNotBlank() -> "I saw your post about hiring" + (if (r.isNotBlank()) " for $r" else "") + at
-            c.source == "posting" && job != null -> "I saw you're the hiring contact for the $r opening$at"
+            c.source == "posting" && job != null -> if (short) "I saw you're the hiring contact for $r" else "I saw you're the hiring contact for the $r opening$at"
+            job != null && short -> "I'm applying for $r$at"
             job != null && good > 1 -> "I noticed $company has $good openings in my field, including $r"
             job != null -> "I noticed $company has an opening for $r"
             company.isNotBlank() -> "I'm interested in opportunities at $company"

@@ -130,7 +130,7 @@ object Emails {
         val out = LinkedHashMap<String, Found>()
         for (m in EMAIL.findAll(text)) {
             val e = m.value.trimEnd('.').lowercase()
-            if (BAD_SUFFIX.any { e.endsWith(it) } || BAD_PARTS.any { e.contains(it) }) continue
+            if (BAD_SUFFIX.any { e.endsWith(it) } || BAD_PARTS.any { e.contains(it) } || !isRecruitingAddress(e)) continue
             if (out.containsKey(e)) continue
             val from = (m.range.first - 280).coerceAtLeast(0)
             val to = (m.range.last + 120).coerceAtMost(text.length - 1)
@@ -138,6 +138,17 @@ object Emails {
             out[e] = Found(e, ctx)
         }
         return out.values.toList()
+    }
+
+    // Mailboxes that appear in job postings but are not for applications.
+    private val NOT_RECRUITING = listOf(
+        "accommodat", "accomodat", "disabilit", "privacy", "legal", "abuse", "compliance", "ethics", "grievance",
+        "security", "support", "helpdesk", "press", "media", "unsubscribe", "donotreply", "do-not-reply", "eeo", "dpo", "gdpr",
+    )
+
+    fun isRecruitingAddress(email: String): Boolean {
+        val local = email.substringBefore("@").lowercase()
+        return NOT_RECRUITING.none { local.contains(it) }
     }
 
     /** Light heuristic: does the surrounding text actually ask people to send a CV/resume? */
@@ -186,6 +197,13 @@ object Templates {
             "myEmail" to p.email,
             "myPhone" to p.phone,
             "myLinkedIn" to p.linkedinUrl,
+            "experience" to p.yearsExperience.trim().let {
+                when {
+                    it.isEmpty() -> "hands-on experience"
+                    it.any(Char::isLetter) -> "$it of experience"
+                    else -> "$it years of experience"
+                }
+            },
             "years" to p.yearsExperience.ifBlank { "relevant" }.let { if (it.all(Char::isDigit)) "$it years" else it },
             "skills" to skills.take(6).joinToString(", "),
             "topSkills" to joinNatural(skills.take(3)).ifBlank { "this area" },
@@ -205,6 +223,16 @@ object Templates {
         0 -> ""
         1 -> items[0]
         else -> items.dropLast(1).joinToString(", ") + " and " + items.last()
+    }
+
+    /**
+     * Shortens by dropping whole sentences from the middle, keeping the first (the reason for
+     * writing) and the last (the ask). Returns the text unchanged if that is not enough.
+     */
+    fun dropMiddle(text: String, limit: Int): String {
+        val parts = text.trim().split(Regex("(?<=[.!?])\\s+")).toMutableList()
+        while (parts.size > 2 && parts.joinToString(" ").length > limit) parts.removeAt(parts.size - 2)
+        return parts.joinToString(" ")
     }
 
     /** Shortens to the limit at a sentence/word boundary. */

@@ -4,6 +4,7 @@ import com.jobpilot.data.AppData
 import com.jobpilot.data.Contact
 import com.jobpilot.data.ContactKind
 import com.jobpilot.data.EmailLead
+import com.jobpilot.data.EmailStatus
 import com.jobpilot.data.Job
 import com.jobpilot.data.JobStatus
 import com.jobpilot.data.Profile
@@ -177,48 +178,80 @@ object JobRunner {
 
     private fun pickTemplate(hasB: Boolean, a: Int, b: Int) = if (hasB && b < a) "B" else "A"
 
-    private fun fillFor(template: String, d: AppData, c: Contact, job: Job?): String = Templates.fill(
-        template.replace("{opening}", Why.opening(c, job, d)),
+    private fun fillFor(template: String, d: AppData, c: Contact, job: Job?, short: Boolean = false): String = Templates.fill(
+        template.replace("{opening}", Why.opening(c, job, d, short)),
         d.profile, c.name, Why.shortName(job?.company ?: c.company), roleOf(job), job?.url.orEmpty(), job?.matchedSkills.orEmpty(),
     )
 
+    /**
+     * The connection note must fit LinkedIn's limit without losing its point. Rather than cutting
+     * the end off, try a tighter opening and then drop middle sentences, so the reason for writing
+     * and the ask both survive.
+     */
     fun draftNote(d: AppData, c: Contact, job: Job?): String {
         val p = d.profile
         val tpl = if (c.template == "B" && p.noteTemplateB.isNotBlank()) p.noteTemplateB else p.noteTemplateA
         if (tpl.isBlank()) return ""
-        return Templates.fit(fillFor(tpl, d, c, job), p.noteCharLimit)
+        for (short in listOf(false, true)) {
+            val text = fillFor(tpl, d, c, job, short)
+            if (text.length <= p.noteCharLimit) return text
+            val trimmed = Templates.dropMiddle(text, p.noteCharLimit)
+            if (trimmed.length <= p.noteCharLimit) return trimmed
+        }
+        return Templates.fit(fillFor(tpl, d, c, job, true), p.noteCharLimit)
     }
 
     fun draftAsk(d: AppData, c: Contact, job: Job?): String = fillFor(d.profile.askTemplate, d, c, job)
 
     /**
      * One-off upgrades when the app is updated. Nothing the user entered is removed:
-     * templates are replaced only if they are still the old defaults, and drafts are
-     * rewritten only if they are still exactly what the app generated.
+     * templates are replaced only if they are still an old default.
      */
     fun migrate(d0: AppData): AppData {
-        if (d0.schema >= 1) return d0
         var d = d0
-        val p = d.profile
-        val oldNote = p.noteTemplateA == Profile.OLD_NOTE
-        val oldAsk = p.askTemplate == Profile.OLD_ASK
-        if (oldNote || oldAsk) {
-            val jobs = d.jobs.associateBy { it.key }
-            val next = p.copy(
-                noteTemplateA = if (oldNote) Profile.DEFAULT_NOTE else p.noteTemplateA,
-                askTemplate = if (oldAsk) Profile.DEFAULT_ASK else p.askTemplate,
-            )
-            val before = d
-            d = d.copy(profile = next)
-            d = d.copy(contacts = d.contacts.map { c ->
-                val job = jobs[c.jobKey]
-                var out = c
-                if (oldNote && c.stage == Stage.SUGGESTED && c.note == draftNote(before, c, job)) out = out.copy(note = draftNote(d, c, job))
-                if (oldAsk && (c.stage == Stage.SUGGESTED || c.stage == Stage.CONNECTED) && c.ask == draftAsk(before, c, job)) out = out.copy(ask = draftAsk(d, c, job))
-                out
-            })
+        if (d.schema < 1) {
+            val p = d.profile
+            val oldNote = p.noteTemplateA == Profile.OLD_NOTE
+            val oldAsk = p.askTemplate == Profile.OLD_ASK
+            if (oldNote || oldAsk) {
+                val jobs = d.jobs.associateBy { it.key }
+                val before = d
+                d = d.copy(profile = p.copy(
+                    noteTemplateA = if (oldNote) Profile.DEFAULT_NOTE else p.noteTemplateA,
+                    askTemplate = if (oldAsk) Profile.DEFAULT_ASK else p.askTemplate,
+                ))
+                val after = d
+                d = d.copy(contacts = d.contacts.map { c ->
+                    val job = jobs[c.jobKey]
+                    var out = c
+                    if (oldNote && c.stage == Stage.SUGGESTED && c.note == draftNote(before, c, job)) out = out.copy(note = draftNote(after, c, job))
+                    if (oldAsk && (c.stage == Stage.SUGGESTED || c.stage == Stage.CONNECTED) && c.ask == draftAsk(before, c, job)) out = out.copy(ask = draftAsk(after, c, job))
+                    out
+                })
+            }
+            d = rescoreAll(d).copy(schema = 1)
         }
-        return rescoreAll(d).copy(schema = 1)
+        if (d.schema < 2) {
+            // 2.1 notes could lose their second sentence to the length limit. Redraft suggestions
+            // that are still waiting for approval, unless the template was customised.
+            val p = d.profile
+            if (p.noteTemplateA == Profile.V21_NOTE || p.noteTemplateA == Profile.DEFAULT_NOTE) {
+                d = d.copy(profile = p.copy(noteTemplateA = Profile.DEFAULT_NOTE))
+                val jobs = d.jobs.associateBy { it.key }
+                val now = d
+                d = d.copy(contacts = d.contacts.map { c ->
+                    if (c.stage == Stage.SUGGESTED && !c.edited) c.copy(note = draftNote(now, c, jobs[c.jobKey])) else c
+                })
+            }
+            // Addresses such as accommodations or privacy mailboxes are not for applications.
+            d = d.copy(emails = d.emails.map { e ->
+                if (e.sentAt == 0L && e.status != EmailStatus.SKIPPED && !Emails.isRecruitingAddress(e.to))
+                    e.copy(status = EmailStatus.SKIPPED, error = "Skipped: this looks like a non-recruiting mailbox, not an address for applications.")
+                else e
+            })
+            d = d.copy(schema = 2)
+        }
+        return d
     }
 
     fun draftFollowUp(p: Profile, c: Contact, job: Job?): String = Templates.fill(
@@ -228,7 +261,7 @@ object JobRunner {
     )
 
     /** "Senior Android Developer (Kotlin) - Remote" -> "Senior Android Developer" */
-    fun roleOf(job: Job?): String = job?.title?.split(Regex("\\s[-|]\\s|[(,]"))?.first()?.trim().orEmpty()
+    fun roleOf(job: Job?): String = Why.shortRole(job?.title)
 
     /** Creates email drafts for addresses found in job descriptions. Returns how many were added. */
     suspend fun queueEmails(jobs: List<Job>): Int {

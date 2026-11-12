@@ -12,6 +12,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,17 +32,20 @@ import com.jobpilot.data.WorkType
 fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
     var p by remember { mutableStateOf(data.profile) }
     var editSearch by remember { mutableStateOf<SearchPref?>(null) }
+    val busy by vm.busy.collectAsState()
     val pickResume = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { vm.importResume(it) }
     }
     // The resume file is saved separately, as soon as it is picked.
-    val dirty = p.copy(resumeFileName = "") != data.profile.copy(resumeFileName = "")
-    fun save() = vm.saveProfile(p.copy(resumeFileName = Store.data.profile.resumeFileName))
+    val dirty = p.copy(resumeFileName = "", resumeText = "") != data.profile.copy(resumeFileName = "", resumeText = "")
+    fun save() = vm.saveProfile(p.copy(resumeFileName = Store.data.profile.resumeFileName, resumeText = Store.data.profile.resumeText))
+    var editResumeText by remember { mutableStateOf(false) }
 
     Page(snack) {
         Header("Settings", onBack = { vm.showSettings(false) }) {
             Quiet("Save", { save() }, enabled = dirty, color = MaterialTheme.colorScheme.onSurface)
         }
+        busy?.let { BusyBar(it) }
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
 
             SectionTitle("Jobs you want", Modifier.padding(top = 0.dp))
@@ -76,6 +80,16 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
                 Btn(if (data.profile.resumeFileName.isBlank()) "Choose file" else "Replace", {
                     pickResume.launch(arrayOf("application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
                 })
+            }
+
+            Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Muted(
+                    if (data.profile.resumeText.isBlank()) "Resume text not read yet. The AI needs it to tailor your resume and write emails."
+                    else "Resume text: ${data.profile.resumeText.length} characters",
+                    Modifier.weight(1f),
+                )
+                if (data.profile.resumeFileName.isNotBlank()) Quiet("Read it", { vm.readResumeText() })
+                Quiet(if (data.profile.resumeText.isBlank()) "Paste" else "View", { editResumeText = true })
             }
 
             SectionTitle("For ranking referrers and tailoring")
@@ -124,11 +138,26 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
             Field("Gmail address", p.smtpUser, keyboard = KeyboardType.Email) { p = p.copy(smtpUser = it.trim()) }
             Field("App Password", p.smtpPassword, secret = true) { p = p.copy(smtpPassword = it.replace(" ", "")) }
             Toggle("Check my inbox for replies", p.mailScanEnabled, "Read-only. Runs with each job check.") { p = p.copy(mailScanEnabled = it) }
+            ButtonRow { Btn("Test Gmail login", { vm.testGmail(p) }, enabled = p.smtpConfigured) }
             Row {
                 Field("SMTP server", p.smtpHost, Modifier.weight(2f).padding(end = 6.dp)) { p = p.copy(smtpHost = it.trim()) }
                 NumField("Port", p.smtpPort, Modifier.weight(1f).padding(start = 6.dp)) { p = p.copy(smtpPort = it) }
             }
             Field("IMAP server", p.imapHost) { p = p.copy(imapHost = it.trim()) }
+
+            SectionTitle("AI writing")
+            Muted(
+                "Optional. With an API key the app rewrites your resume for each job from your real resume, and writes emails and LinkedIn " +
+                    "messages on request. The key stays on this phone. Your resume and the job text are sent to the provider you choose, and you pay that provider for usage."
+            )
+            Seg(listOf("anthropic", "openai"), p.aiProvider, { if (it == "openai") "openai-compatible" else it }) { p = p.copy(aiProvider = it) }
+            Field("API key", p.aiKey, secret = true) { p = p.copy(aiKey = it.trim()) }
+            Field(if (p.aiProvider == "anthropic") "Model (empty = claude-sonnet-5-5)" else "Model name", p.aiModel) { p = p.copy(aiModel = it.trim()) }
+            if (p.aiProvider != "anthropic") {
+                Field("Base URL (empty = api.openai.com/v1)", p.aiBaseUrl, keyboard = KeyboardType.Uri) { p = p.copy(aiBaseUrl = it.trim()) }
+                Muted("Any service that speaks the OpenAI chat format works here, including local servers. Reading a PDF resume may not be supported by all of them; a .docx or pasted text always works.")
+            }
+            ButtonRow { Btn("Test connection", { vm.testAi(p) }, enabled = p.aiKey.isNotBlank()) }
 
             SectionTitle("Job suggestions")
             NumField("Keep jobs under this match % out of the inbox", p.minMatch) { p = p.copy(minMatch = it.coerceIn(0, 90)) }
@@ -146,6 +175,16 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
             if (p.autoCheckEnabled) NumField("Every N hours", p.autoCheckHours) { p = p.copy(autoCheckHours = it.coerceIn(1, 72)) }
 
             ButtonRow(Modifier.padding(top = 14.dp, bottom = 40.dp)) { Btn("Save settings", { save() }, primary = true, enabled = dirty) }
+        }
+    }
+
+    if (editResumeText) {
+        var text by remember { mutableStateOf(data.profile.resumeText) }
+        Dialog(title = "Resume text", onDismiss = { editResumeText = false }, confirm = "Save", onConfirm = { vm.setResumeText(text); editResumeText = false }) {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Muted("This is what the AI works from. Paste your resume here, or fix anything it misread.")
+                Field("Resume", text, lines = 12) { text = it }
+            }
         }
     }
 

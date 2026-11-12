@@ -64,7 +64,18 @@ data class Profile(
     val minMatch: Int = 40,
     /** "dark", "light" or "system". */
     val theme: String = "dark",
+
+    // AI writing (optional). The key stays on the phone; requests go straight to the provider.
+    /** "anthropic" or "openai" (any OpenAI-compatible endpoint). */
+    val aiProvider: String = "anthropic",
+    val aiBaseUrl: String = "",
+    val aiModel: String = "",
+    val aiKey: String = "",
+    /** Plain text of the uploaded resume: read by the AI from a PDF, extracted from a .docx, or pasted. */
+    val resumeText: String = "",
 ) {
+    val aiConfigured: Boolean get() = aiKey.isNotBlank()
+
     fun skillList(): List<String> = splitList(skills)
     fun pastCompanyList(): List<String> = splitList(pastCompanies)
 
@@ -77,6 +88,10 @@ data class Profile(
         // {opening} is filled with the concrete reason for writing: their hiring post, the posting
         // they are named on, or the openings at their company.
         const val DEFAULT_NOTE =
+            "Hi {firstName}, {opening}. I have {experience} with {topSkills}. Would you be open to a quick chat about it?"
+
+        /** Default shipped in 2.1. */
+        const val V21_NOTE =
             "Hi {firstName}, {opening}. I work with {topSkills} and would like to connect."
         const val DEFAULT_ASK =
             "Hi {firstName}, thanks for connecting. {opening}. I'm applying, and I have {years} of experience with " +
@@ -179,6 +194,34 @@ data class Job(
     /** Why this job was suggested, and what to be careful about. Filled by scoring. */
     val reasons: List<String> = emptyList(),
     val cautions: List<String> = emptyList(),
+    /** The tailored resume content behind [tailoredResume], when one was generated. */
+    val tailored: TailoredResume? = null,
+)
+
+@Serializable
+data class ResumeRole(
+    val title: String = "", val company: String = "", val dates: String = "",
+    val bullets: List<String> = emptyList(),
+)
+
+@Serializable
+data class ResumeProject(val name: String = "", val bullets: List<String> = emptyList())
+
+/** A resume rewritten for one job. Facts come from the user's own resume; only emphasis and wording change. */
+@Serializable
+data class TailoredResume(
+    val headline: String = "",
+    val summary: String = "",
+    val skills: List<String> = emptyList(),
+    val experience: List<ResumeRole> = emptyList(),
+    val projects: List<ResumeProject> = emptyList(),
+    val education: List<String> = emptyList(),
+    val other: List<String> = emptyList(),
+    /** What was changed compared with the original, for the user to review. */
+    val changes: List<String> = emptyList(),
+    /** Things the posting asks for that the resume does not show. */
+    val gaps: List<String> = emptyList(),
+    val byAi: Boolean = false,
 )
 
 @Serializable
@@ -231,6 +274,8 @@ data class Contact(
     /** Excerpt of their hiring post, when they wrote one. */
     val postSnippet: String = "",
     val postUrl: String = "",
+    /** The user changed the note or message by hand; app upgrades must leave it alone. */
+    val edited: Boolean = false,
 )
 
 @Serializable

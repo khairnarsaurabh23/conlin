@@ -17,6 +17,7 @@ import com.jobpilot.core.Mailer
 import com.jobpilot.core.Rank
 import com.jobpilot.core.Report
 import com.jobpilot.core.ResumePdf
+import com.jobpilot.core.AiTasks
 import com.jobpilot.core.Tailor
 import com.jobpilot.core.Why
 import com.jobpilot.data.ActionKind
@@ -27,6 +28,8 @@ import com.jobpilot.data.EmailStatus
 import com.jobpilot.data.Job
 import com.jobpilot.data.JobStatus
 import com.jobpilot.data.Profile
+import com.jobpilot.data.ResumeRole
+import com.jobpilot.data.TailoredResume
 import com.jobpilot.data.SearchPref
 import com.jobpilot.data.Stage
 import com.jobpilot.data.Store
@@ -195,17 +198,57 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------------- Resume tailoring ----------------
 
-    fun tailor(job: Job): Tailor.Result = Tailor.build(Store.data.profile, job)
+    /** Runs one AI request, shows progress, and hands back the result (null if it failed). */
+    private fun <T> aiCall(label: String, block: suspend () -> T, done: (T?) -> Unit) = viewModelScope.launch {
+        _busy.value = label
+        val result = try { block() } catch (e: Exception) { toast(e.message ?: "The AI request failed"); null }
+        _busy.value = null
+        done(result)
+    }
 
-    fun createTailoredResume(job: Job, summary: String, skills: List<String>) = launchBusy("Building the resume") {
-        val f = withContext(Dispatchers.IO) { ResumePdf.build(ctx.filesDir, Store.data.profile, job, summary, skills) }
-        Store.updateJob(job.key) { it.copy(tailoredSummary = summary, tailoredResume = f.name) }
+    /** Without an AI key: reorder skills and write a summary from the profile. */
+    fun ruleTailor(job: Job): TailoredResume {
+        val p = Store.data.profile
+        val t = Tailor.build(p, job)
+        return TailoredResume(
+            headline = p.headline, summary = t.summary, skills = t.skills,
+            experience = if (p.experienceText.isBlank()) emptyList() else listOf(ResumeRole(bullets = p.experienceText.lines().filter { it.isNotBlank() })),
+            education = listOf(p.educationText.ifBlank { p.college }).filter { it.isNotBlank() },
+            gaps = t.missingKeywords,
+        )
+    }
+
+    fun aiTailor(job: Job, instructions: String, done: (TailoredResume?) -> Unit) =
+        aiCall("Rewriting your resume for this job", { AiTasks.tailor(Store.data, job, instructions) }, done)
+
+    fun aiEmail(e: EmailLead, context: String, done: (Pair<String, String>?) -> Unit) =
+        aiCall("Writing the email", { AiTasks.email(Store.data, e, context) }, done)
+
+    fun aiNote(c: Contact, context: String, done: (Pair<String, String>?) -> Unit) =
+        aiCall("Writing the messages", { AiTasks.note(Store.data, c, context) }, done)
+
+    fun testAi(p: Profile) = aiCall("Testing the AI connection", { AiTasks.test(p) }) { it?.let(::toast) }
+
+    fun testGmail(p: Profile) = launchBusy("Signing in to Gmail") { toast(Mailer.testLogin(p)) }
+
+    fun readResumeText() = launchBusy("Reading your resume") {
+        val f = Store.resumeFile() ?: run { toast("Attach a resume first"); return@launchBusy }
+        val text = AiTasks.readResume(Store.data.profile, f)
+        Store.setProfile(Store.data.profile.copy(resumeText = text))
+        toast(if (text.isBlank()) "No text found in the resume" else "Resume read: ${text.length} characters")
+    }
+
+    fun setResumeText(text: String) = edit { Store.setProfile(Store.data.profile.copy(resumeText = text.trim())) }
+
+    fun createTailoredResume(job: Job, r: TailoredResume) = launchBusy("Building the PDF") {
+        val f = withContext(Dispatchers.IO) { ResumePdf.build(ctx.filesDir, Store.data.profile, job, r) }
+        Store.updateJob(job.key) { it.copy(tailoredSummary = r.summary, tailoredResume = f.name, tailored = r) }
         toast("Tailored resume saved. Emails for this job will attach it.")
     }
 
     fun removeTailoredResume(job: Job) = edit {
         File(ctx.filesDir, job.tailoredResume).delete()
-        Store.updateJob(job.key) { it.copy(tailoredResume = "") }
+        Store.updateJob(job.key) { it.copy(tailoredResume = "", tailored = null) }
     }
 
     // ---------------- People ----------------
@@ -267,7 +310,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
     }
-    fun saveContactText(id: String, note: String, ask: String) = edit { Store.updateContact(id) { it.copy(note = note, ask = ask) } }
+    fun saveContactText(id: String, note: String, ask: String) = edit { Store.updateContact(id) { it.copy(note = note, ask = ask, edited = true) } }
     fun deleteContact(id: String) = edit { Store.deleteContact(id) }
 
     fun approveFollowUp(c: Contact) = edit {
@@ -288,7 +331,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun redraft(c: Contact) = edit {
         val job = Store.data.jobs.firstOrNull { it.key == c.jobKey }
         val d = Store.data
-        Store.updateContact(c.id) { it.copy(note = JobRunner.draftNote(d, it, job), ask = JobRunner.draftAsk(d, it, job)) }
+        Store.updateContact(c.id) { it.copy(note = JobRunner.draftNote(d, it, job), ask = JobRunner.draftAsk(d, it, job), edited = false) }
     }
 
     fun linkContactToJob(c: Contact, job: Job) = edit {
@@ -432,8 +475,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 } ?: error("Can't read the file")
                 target
             }
-            Store.setProfile(Store.data.profile.copy(resumeFileName = name))
+            Store.setProfile(Store.data.profile.copy(resumeFileName = name, resumeText = ""))
             toast("Resume attached")
+            // Get its text so the AI can work from the real resume: .docx is read here, a PDF by the AI.
+            val p = Store.data.profile
+            if (name.endsWith(".docx") || (name.endsWith(".pdf") && p.aiConfigured)) readResumeText()
         } catch (e: Exception) {
             toast("Couldn't import the resume: ${e.message}")
         }

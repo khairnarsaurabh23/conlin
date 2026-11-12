@@ -61,6 +61,31 @@ object Mailer {
         Transport.send(msg)
     }
 
+    const val LOGIN_HELP =
+        "Gmail did not accept the login. It needs a 16-letter App Password (Google account > Security > 2-Step Verification > App passwords), not your normal password."
+
+    fun isLoginError(msg: String) = msg.contains("535") || msg.contains("534") || msg.contains("Authentication", true) ||
+        msg.contains("BadCredentials", true) || msg.contains("Username and Password not accepted", true)
+
+    /** Signs in to the SMTP server without sending anything. */
+    suspend fun testLogin(p: Profile): String = withContext(Dispatchers.IO) {
+        if (!p.smtpConfigured) return@withContext "Enter your Gmail address and App Password first."
+        val props = Properties().apply {
+            put("mail.smtp.auth", "true")
+            put("mail.smtp.connectiontimeout", "20000"); put("mail.smtp.timeout", "20000")
+            if (p.smtpPort == 465) put("mail.smtp.ssl.enable", "true") else put("mail.smtp.starttls.enable", "true")
+        }
+        try {
+            val t = Session.getInstance(props).getTransport("smtp")
+            t.connect(p.smtpHost, p.smtpPort, p.smtpUser, p.smtpPassword)
+            t.close()
+            "Gmail login works."
+        } catch (e: Exception) {
+            val msg = e.message ?: e.javaClass.simpleName
+            if (isLoginError(msg)) LOGIN_HELP else "Couldn't reach ${p.smtpHost}: $msg"
+        }
+    }
+
     private fun attachmentName(p: Profile, f: File): String {
         val ext = f.extension.ifBlank { "pdf" }
         val n = p.name.ifBlank { "Resume" }.replace(Regex("[^A-Za-z0-9]+"), "_")
@@ -117,12 +142,14 @@ object Mailer {
                 sent++
                 markSent(lead, "SMTP")
             } catch (e: Exception) {
-                failed++
                 val msg = e.message ?: e.javaClass.simpleName
-                Store.updateEmail(lead.id) { it.copy(status = EmailStatus.FAILED, error = msg) }
-                if (msg.contains("Authentication", true) || msg.contains("535")) {
-                    return "Login to ${p.smtpHost} failed. Gmail needs an App Password, not your normal password."
+                if (isLoginError(msg)) {
+                    // Nothing wrong with the email itself: leave it approved and explain the login problem.
+                    Store.updateEmail(lead.id) { it.copy(error = LOGIN_HELP) }
+                    return LOGIN_HELP
                 }
+                failed++
+                Store.updateEmail(lead.id) { it.copy(status = EmailStatus.FAILED, error = msg) }
             }
             if (lead !== queue.last()) delay(4000L + Random.nextLong(4000))
         }

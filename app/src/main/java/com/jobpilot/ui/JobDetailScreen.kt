@@ -20,18 +20,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.jobpilot.core.Tailor
 import com.jobpilot.data.AppData
 import com.jobpilot.data.Job
 import com.jobpilot.data.JobStatus
 import com.jobpilot.data.Stage
+import com.jobpilot.data.TailoredResume
 
 @Composable
 fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHostState) {
     val ctx = LocalContext.current
+    val p = data.profile
     val people = data.contacts.filter { it.jobKey == job.key && it.stage != Stage.SKIPPED }.sortedByDescending { it.rank }
     var notes by remember(job.key) { mutableStateOf(job.notes) }
-    var tailoring by remember { mutableStateOf<Tailor.Result?>(null) }
+    var askTailor by remember { mutableStateOf(false) }
+    var preview by remember { mutableStateOf<TailoredResume?>(null) }
     val busyMsg by vm.busy.collectAsState()
     val busy = busyMsg != null
 
@@ -41,7 +43,7 @@ fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHo
         }
         busyMsg?.let { BusyBar(it) }
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-            Row(verticalAlignment = Alignment.Top) {
+            Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.Top) {
                 Text(job.title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(start = 12.dp)) {
                     ScoreText(job.matchScore); Muted("match")
@@ -71,17 +73,30 @@ fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHo
             if (job.reasons.isEmpty() && job.cautions.isEmpty()) Muted("Not scored yet.")
 
             SectionTitle("Resume for this job")
+            val saved = job.tailored
             if (job.tailoredResume.isNotBlank()) {
-                Text("A tailored resume is saved and will be attached to emails for this job.", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    if (saved?.byAi == true) "Rewritten for this job by the AI from your resume. Attached to emails for this job."
+                    else "A reordered version is saved and attached to emails for this job.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                saved?.changes?.take(5)?.forEach { Mark("+", it, ok) }
+                saved?.gaps?.take(4)?.forEach { Mark("!", "Posting asks for: $it", warn) }
                 ButtonRow {
-                    Btn("Share PDF", { shareFile(ctx, vm.fileFor(job.tailoredResume), "application/pdf") })
-                    Btn("Redo", { tailoring = vm.tailor(job) })
+                    Btn("Share PDF", { shareFile(ctx, vm.fileFor(job.tailoredResume), "application/pdf") }, primary = true)
+                    Btn("Redo", { if (p.aiConfigured) askTailor = true else preview = vm.ruleTailor(job) }, enabled = !busy)
                     Quiet("Use my original", { vm.removeTailoredResume(job) })
                 }
             } else {
-                Muted("Reorders your skills and summary around what this posting asks for, and builds a one-page PDF. It only rearranges what you entered in Settings.")
-                ButtonRow { Btn("Tailor resume", { tailoring = vm.tailor(job) }, enabled = job.description.isNotBlank()) }
+                Muted(
+                    if (p.aiConfigured) "The AI rewrites your resume around this posting: it reorders and rewords your real experience, and tells you what it changed and what the posting asks for that you don't show."
+                    else "Without an AI key this only reorders your skills and writes a short summary. Add a key under Settings > AI writing for a real rewrite from your resume."
+                )
+                ButtonRow {
+                    Btn(if (p.aiConfigured) "Tailor with AI" else "Tailor (basic)", { if (p.aiConfigured) askTailor = true else preview = vm.ruleTailor(job) }, enabled = job.description.isNotBlank() && !busy)
+                }
                 if (job.description.isBlank()) Muted("Load the full details first.")
+                else if (p.aiConfigured && p.resumeText.isBlank()) Muted("Your resume text hasn't been read yet (Settings > About you). Until then the AI only has your profile fields.", color = warn)
             }
 
             SectionTitle("People", trailing = if (people.isEmpty()) "" else "${people.size}")
@@ -98,8 +113,8 @@ fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHo
             if (people.size > 6) Muted("And ${people.size - 6} more in Tracker.")
             ButtonRow {
                 Btn("Same role", { vm.findPeople(job) })
-                if (data.profile.college.isNotBlank()) Btn("Alumni", { vm.findPeople(job, "alumni") })
-                if (data.profile.pastCompanyList().isNotEmpty()) Btn("Ex-colleagues", { vm.findPeople(job, "colleague") })
+                if (p.college.isNotBlank()) Btn("Alumni", { vm.findPeople(job, "alumni") })
+                if (p.pastCompanyList().isNotEmpty()) Btn("Ex-colleagues", { vm.findPeople(job, "colleague") })
                 Btn("Recruiters", { vm.findPeople(job, "recruiter") })
             }
 
@@ -126,22 +141,42 @@ fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHo
         }
     }
 
-    tailoring?.let { t ->
-        var summary by remember(t) { mutableStateOf(job.tailoredSummary.ifBlank { t.summary }) }
+    if (askTailor) {
+        var extra by remember { mutableStateOf("") }
         Dialog(
-            title = "Tailored resume", onDismiss = { tailoring = null }, confirm = "Create PDF",
-            onConfirm = { vm.createTailoredResume(job, summary.trim(), t.skills); tailoring = null },
+            title = "Tailor with AI", onDismiss = { askTailor = false }, confirm = "Generate",
+            onConfirm = { askTailor = false; vm.aiTailor(job, extra.trim()) { r -> if (r != null) preview = r } },
+        ) {
+            Column {
+                Muted("Takes up to a minute. You review the result before a PDF is made.")
+                Field("Anything to emphasise or leave out (optional)", extra, lines = 3) { extra = it }
+            }
+        }
+    }
+
+    preview?.let { r ->
+        var summary by remember(r) { mutableStateOf(r.summary) }
+        Dialog(
+            title = "Review", onDismiss = { preview = null }, confirm = "Create PDF",
+            onConfirm = { vm.createTailoredResume(job, r.copy(summary = summary.trim())); preview = null },
         ) {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Field("Summary", summary, lines = 4) { summary = it }
-                Muted("Skills, in this order", Modifier.padding(top = 8.dp))
-                Text(t.skills.joinToString(", ").ifBlank { "Add skills in Settings." }, style = MaterialTheme.typography.bodyMedium)
-                if (t.missingKeywords.isNotEmpty()) {
-                    Muted("The posting also mentions", Modifier.padding(top = 10.dp))
-                    Text(t.missingKeywords.joinToString(", "), style = MaterialTheme.typography.bodyMedium)
-                    Muted("If you have any of these, add them to your skills in Settings and redo this.")
+                if (r.changes.isNotEmpty()) {
+                    Label("what changed", Modifier.padding(top = 8.dp, bottom = 2.dp))
+                    r.changes.forEach { Mark("+", it, ok, maxLines = 5) }
                 }
-                if (data.profile.experienceText.isBlank()) Muted("Your experience section is empty. Fill it in under Settings so the PDF is complete.", Modifier.padding(top = 10.dp), color = warn)
+                if (r.gaps.isNotEmpty()) {
+                    Label("the posting asks for, your resume doesn't show", Modifier.padding(top = 8.dp, bottom = 2.dp))
+                    r.gaps.forEach { Mark("!", it, warn, maxLines = 4) }
+                }
+                Label("skills", Modifier.padding(top = 8.dp, bottom = 2.dp))
+                Text(r.skills.joinToString(", ").ifBlank { "None listed." }, style = MaterialTheme.typography.bodySmall)
+                r.experience.filter { it.title.isNotBlank() }.forEach { role ->
+                    Label(listOf(role.title, role.company).filter { it.isNotBlank() }.joinToString(", "), Modifier.padding(top = 8.dp, bottom = 2.dp))
+                    role.bullets.forEach { Mark("-", it, MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 5) }
+                }
+                if (r.byAi) Muted("Check every line against your real experience before sending it.", Modifier.padding(top = 10.dp), color = warn)
             }
         }
     }

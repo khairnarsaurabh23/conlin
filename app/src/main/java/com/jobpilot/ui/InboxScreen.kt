@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -24,6 +25,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,9 +51,6 @@ import java.util.concurrent.TimeUnit
 
 /** One row of the inbox. Keys are stable so rows animate out when handled. */
 private sealed class Card(val key: String) {
-    object Safety : Card("safety")
-    object Setup : Card("setup")
-    class Head(val title: String, val count: Int) : Card("head-$title")
     class SendPerson(val c: Contact, val job: Job?) : Card("send-${c.id}")
     class SendEmails(val count: Int) : Card("send-emails")
     class SendEmail(val e: EmailLead) : Card("sendmail-${e.id}")
@@ -63,64 +62,76 @@ private sealed class Card(val key: String) {
     class FindPeople(val job: Job) : Card("people-${job.key}")
     class NewJob(val job: Job) : Card("job-${job.key}")
     class More(val text: String, val id: String) : Card("more-$id")
-    object Empty : Card("empty")
 }
 
-private const val MAX_PEOPLE = 8
-private const val MAX_JOBS = 8
+/** The inbox is split by kind of decision, so each list is one sort of thing. */
+enum class InboxTab(val label: String, val empty: String) {
+    SEND("send", "Nothing approved is waiting to be sent."),
+    JOBS("jobs", "No new jobs to review. Tap Check now, or wait for the next automatic check."),
+    REFERRALS("referrals", "No referral suggestions. Keep a job, then use Find people on it. People tied to a job or a hiring post show up here."),
+    NETWORK("network", "Nobody here. People with no hiring signal or linked job land in this list."),
+    EMAILS("emails", "No recruiter emails to review."),
+}
 
-private fun buildCards(d: AppData, now: Long): List<Card> {
+private const val MAX_PEOPLE = 15
+private const val MAX_JOBS = 15
+
+private fun buildCards(d: AppData, now: Long): Map<InboxTab, List<Card>> {
     val p = d.profile
     val jobs = d.jobs.associateBy { it.key }
-    val out = mutableListOf<Card>(Card.Safety)
-    if (p.name.isBlank() || p.skillList().isEmpty() || d.searches.isEmpty()) out += Card.Setup
 
-    // Ready to send: everything already approved
-    val sendPeople = d.contacts.filter { it.stage == Stage.ASK_APPROVED || it.stage == Stage.APPROVED }
+    // send: everything already approved
+    val send = mutableListOf<Card>()
+    d.contacts.filter { it.stage == Stage.ASK_APPROVED || it.stage == Stage.APPROVED }
         .sortedWith(compareByDescending<Contact> { it.stage == Stage.ASK_APPROVED }.thenByDescending { it.rank })
+        .forEach { send += Card.SendPerson(it, jobs[it.jobKey]) }
     val sendMails = d.emails.filter { it.status == EmailStatus.APPROVED }
-    if (sendPeople.isNotEmpty() || sendMails.isNotEmpty()) {
-        out += Card.Head("Ready to send", sendPeople.size + sendMails.size)
-        sendPeople.forEach { out += Card.SendPerson(it, jobs[it.jobKey]) }
-        if (sendMails.isNotEmpty()) {
-            if (p.smtpConfigured) out += Card.SendEmails(sendMails.size) else sendMails.forEach { out += Card.SendEmail(it) }
-        }
+    if (sendMails.isNotEmpty()) {
+        if (p.smtpConfigured) send += Card.SendEmails(sendMails.size) else sendMails.forEach { send += Card.SendEmail(it) }
     }
 
-    // Needs a decision
-    val review = mutableListOf<Card>()
-    val followMs = TimeUnit.DAYS.toMillis(p.followUpDays.toLong())
-    d.contacts.filter { it.stage == Stage.ASKED && it.followUps == 0 && now - it.askedAt > followMs }
-        .forEach { review += Card.FollowUp(it, jobs[it.jobKey]) }
-    d.contacts.filter { it.stage == Stage.CONNECTED }.sortedByDescending { it.rank }
-        .forEach { review += Card.Ask(it, jobs[it.jobKey]) }
-    d.emails.filter { it.status == EmailStatus.DRAFT }.sortedByDescending { it.createdAt }.forEach { review += Card.Email(it) }
-    val suggested = d.contacts.filter { it.stage == Stage.SUGGESTED }.sortedByDescending { it.rank }
-    suggested.take(MAX_PEOPLE).forEach { review += Card.Connect(it, jobs[it.jobKey]) }
-    if (suggested.size > MAX_PEOPLE) review += Card.More("${suggested.size - MAX_PEOPLE} more people, lower ranked, appear as you clear these.", "people")
-    val staleMs = TimeUnit.DAYS.toMillis(p.staleInviteDays.toLong())
-    val stale = d.contacts.count { it.stage == Stage.INVITED && now - it.invitedAt > staleMs }
-    if (stale > 0) review += Card.Stale(stale)
-    d.jobs.filter { j -> j.status == JobStatus.SAVED && !j.peoplePrompted && d.contacts.none { it.jobKey == j.key } }
-        .sortedByDescending { it.matchScore }.take(3).forEach { review += Card.FindPeople(it) }
+    // jobs: new postings, then prompts to find people for kept ones
+    val jobCards = mutableListOf<Card>()
     val allNew = d.jobs.filter { it.status == JobStatus.NEW }
     val fresh = allNew.filter { it.matchScore >= p.minMatch }
         .sortedWith(compareByDescending<Job> { it.matchScore }.thenByDescending { it.foundAt })
-    fresh.take(MAX_JOBS).forEach { review += Card.NewJob(it) }
+    fresh.take(MAX_JOBS).forEach { jobCards += Card.NewJob(it) }
     val hidden = allNew.size - fresh.size
     val queued = (fresh.size - MAX_JOBS).coerceAtLeast(0)
-    if (queued > 0 || hidden > 0) review += Card.More(
+    if (queued > 0 || hidden > 0) jobCards += Card.More(
         listOfNotNull(
-            if (queued > 0) "$queued more new jobs queued" else null,
-            if (hidden > 0) "$hidden under ${p.minMatch}% kept out of the inbox" else null,
+            if (queued > 0) "$queued more queued" else null,
+            if (hidden > 0) "$hidden under ${p.minMatch}% kept out" else null,
         ).joinToString(", "), if (hidden > 0) "jobs" else "queue"
     )
+    d.jobs.filter { j -> j.status == JobStatus.SAVED && !j.peoplePrompted && d.contacts.none { it.jobKey == j.key } }
+        .sortedByDescending { it.matchScore }.take(5).forEach { jobCards += Card.FindPeople(it) }
 
-    if (review.isNotEmpty()) {
-        out += Card.Head("For your approval", review.count { it !is Card.More })
-        out += review
-    } else if (sendPeople.isEmpty() && sendMails.isEmpty()) out += Card.Empty
-    return out
+    // referrals: people tied to a job, a posting or a hiring post. network: everyone else.
+    val referrals = mutableListOf<Card>()
+    val network = mutableListOf<Card>()
+    val followMs = TimeUnit.DAYS.toMillis(p.followUpDays.toLong())
+    d.contacts.filter { it.stage == Stage.ASKED && it.followUps == 0 && now - it.askedAt > followMs }
+        .forEach { referrals += Card.FollowUp(it, jobs[it.jobKey]) }
+    d.contacts.filter { it.stage == Stage.CONNECTED }.sortedByDescending { it.rank }.forEach {
+        (if (jobs[it.jobKey] != null || Why.hasSignal(it, d)) referrals else network) += Card.Ask(it, jobs[it.jobKey])
+    }
+    val (withReason, without) = d.contacts.filter { it.stage == Stage.SUGGESTED }.sortedByDescending { it.rank }
+        .partition { Why.hasSignal(it, d) }
+    withReason.take(MAX_PEOPLE).forEach { referrals += Card.Connect(it, jobs[it.jobKey]) }
+    if (withReason.size > MAX_PEOPLE) referrals += Card.More("${withReason.size - MAX_PEOPLE} more, lower ranked, appear as you clear these.", "ref")
+    without.take(MAX_PEOPLE).forEach { network += Card.Connect(it, jobs[it.jobKey]) }
+    if (without.size > MAX_PEOPLE) network += Card.More("${without.size - MAX_PEOPLE} more appear as you clear these.", "net")
+    val staleMs = TimeUnit.DAYS.toMillis(p.staleInviteDays.toLong())
+    val stale = d.contacts.count { it.stage == Stage.INVITED && now - it.invitedAt > staleMs }
+    if (stale > 0) network += Card.Stale(stale)
+
+    val emails = d.emails.filter { it.status == EmailStatus.DRAFT }.sortedByDescending { it.createdAt }.map { Card.Email(it) }
+
+    return mapOf(
+        InboxTab.SEND to send, InboxTab.JOBS to jobCards, InboxTab.REFERRALS to referrals,
+        InboxTab.NETWORK to network, InboxTab.EMAILS to emails,
+    )
 }
 
 @Composable
@@ -129,23 +140,34 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(30_000); now = System.currentTimeMillis() } }
 
-    val cards = remember(data, now) { buildCards(data, now) }
+    val all = remember(data, now) { buildCards(data, now) }
+    fun count(t: InboxTab) = all.getValue(t).count { it !is Card.More }
+    // Until a tab is picked, show the first one that has something in it.
+    var chosen by rememberSaveable { mutableStateOf<InboxTab?>(null) }
+    val tab = chosen ?: InboxTab.entries.firstOrNull { count(it) > 0 } ?: InboxTab.JOBS
+    val cards = all.getValue(tab)
+
     var editPerson by remember { mutableStateOf<Contact?>(null) }
     var editEmail by remember { mutableStateOf<EmailLead?>(null) }
     var warning by remember { mutableStateOf(false) }
+    val p = data.profile
+    val needsSetup = p.name.isBlank() || p.skillList().isEmpty() || data.searches.isEmpty()
 
     Column(Modifier.fillMaxSize()) {
         Header("Inbox") {
             Quiet(if (busy) "Checking" else "Check now", { vm.runSearch() }, enabled = !busy && data.searches.isNotEmpty())
             IconButton(onClick = { vm.showSettings(true) }) { Icon(Icons.Default.Settings, "Settings") }
         }
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
+        Seg(InboxTab.entries, tab, { t -> count(t).let { n -> if (n > 0) "${t.label} $n" else t.label } }) { chosen = it }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (tab == InboxTab.SEND || tab == InboxTab.REFERRALS || tab == InboxTab.NETWORK) SafetyLine(vm, data, now) { warning = true }
+
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 24.dp)) {
+            if (needsSetup) item(key = "setup") { Column(Modifier.padding(bottom = 10.dp)) { SetupCard(vm, data) } }
+            if (cards.isEmpty()) item(key = "empty") { EmptyInbox(data, tab) }
             items(cards, key = { it.key }) { card ->
-                Column(Modifier.animateItem().padding(bottom = if (card is Card.Head) 0.dp else 10.dp)) {
+                Column(Modifier.animateItem().padding(bottom = 10.dp)) {
                     when (card) {
-                        Card.Safety -> SafetyStrip(vm, data, now) { warning = true }
-                        Card.Setup -> SetupCard(vm, data)
-                        is Card.Head -> SectionTitle(card.title, trailing = "${card.count}")
                         is Card.SendPerson -> SendPersonCard(vm, data, card.c, card.job, now)
                         is Card.SendEmails -> Panel {
                             Label("emails, approved")
@@ -172,12 +194,13 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                             card.c.note.ifBlank { "No note. A plain request will be sent." },
                         ) {
                             Btn("Approve", { vm.approveInvite(card.c.id) }, primary = true)
-                            Quiet("Edit", { editPerson = card.c })
+                            Quiet(if (data.profile.aiConfigured) "Edit / AI" else "Edit", { editPerson = card.c })
                             Quiet("Skip", { vm.skipContact(card.c.id) })
                         }
                         is Card.Email -> EmailCard(card.e, onApprove = { vm.setEmailStatus(card.e.id, EmailStatus.APPROVED) },
                             onEdit = { editEmail = card.e }, onSkip = { vm.setEmailStatus(card.e.id, EmailStatus.SKIPPED) })
                         is Card.Stale -> Panel {
+                            Label("housekeeping")
                             Text("${card.count} invite(s) unanswered for over ${data.profile.staleInviteDays} days", style = MaterialTheme.typography.titleSmall)
                             Muted("Withdrawing old invites keeps your acceptance rate healthy. Withdraw them in LinkedIn, then close them here.")
                             ButtonRow {
@@ -186,7 +209,7 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                             }
                         }
                         is Card.FindPeople -> Panel {
-                            Label("kept job")
+                            Label("kept job, no people yet")
                             Text("${card.job.title} at ${card.job.company}", style = MaterialTheme.typography.titleSmall)
                             Muted("Find people there who could refer you.")
                             ButtonRow {
@@ -201,7 +224,6 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                             Muted(card.text, Modifier.weight(1f))
                             if (card.id == "jobs") Quiet("Skip those", { vm.skipWeakJobs(data.profile.minMatch) })
                         }
-                        Card.Empty -> EmptyInbox(data)
                     }
                 }
             }
@@ -213,28 +235,25 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
     if (warning) WarningDialog(vm) { warning = false }
 }
 
+/** One line of budget, so the limits are visible wherever something can be sent or approved. */
 @Composable
-private fun SafetyStrip(vm: AppViewModel, data: AppData, now: Long, onReport: () -> Unit) {
+private fun SafetyLine(vm: AppViewModel, data: AppData, now: Long, onReport: () -> Unit) {
     val usage = Guard.inviteUsage(data, now)
     val paused = Guard.pauseText(data, now)
-    Panel {
-        if (paused != null) {
-            Text(paused, style = MaterialTheme.typography.bodyMedium, color = warn)
-            ButtonRow { Quiet("Resume now", { vm.resumeOutreach() }) }
-            Gap(4)
-        }
-        Meter("Connection requests, last 24 hours", usage.today, usage.limits.day)
-        Gap(10)
-        Meter("Last 7 days", usage.week, usage.limits.week)
-        val notes = buildList {
-            if (usage.limits.note.isNotBlank()) add(usage.limits.note)
-            Guard.acceptanceRate(data, now)?.let { add("$it% of your invites are accepted") }
-        }
-        Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Muted(notes.joinToString(". "), Modifier.weight(1f))
+    Column(Modifier.padding(start = 16.dp, end = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label(
+                "invites ${usage.today}/${usage.limits.day} today, ${usage.week}/${usage.limits.week} this week",
+                Modifier.weight(1f), color = if (usage.today >= usage.limits.day || usage.week >= usage.limits.week) warn else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Quiet("Report a warning", onReport)
         }
+        if (paused != null) Row(verticalAlignment = Alignment.CenterVertically) {
+            Muted(paused, Modifier.weight(1f), color = warn)
+            Quiet("Resume", { vm.resumeOutreach() })
+        } else if (usage.limits.note.isNotBlank()) Label(usage.limits.note, Modifier.padding(bottom = 4.dp))
     }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
 @Composable
@@ -259,16 +278,18 @@ private fun SetupCard(vm: AppViewModel, data: AppData) {
 }
 
 @Composable
-private fun EmptyInbox(data: AppData) {
+private fun EmptyInbox(data: AppData, tab: InboxTab) {
     val last = data.runs.firstOrNull()
     EmptyNote(
-        "Nothing waiting for you",
+        "Nothing here",
         buildString {
             if (data.searches.isEmpty()) append("Add a job search in Settings to get started.")
             else {
-                if (last != null) append("Last check: " + DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(last.at)) + ". ")
-                if (data.profile.autoCheckEnabled) append("JobPilot checks again every ${data.profile.autoCheckHours} hours.")
-                last?.errors?.firstOrNull()?.let { append("\n\n$it") }
+                append(tab.empty)
+                if (tab == InboxTab.JOBS && last != null) {
+                    append("\n\nLast check: " + DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(last.at)) + ".")
+                    last.errors.firstOrNull()?.let { append(" $it") }
+                }
             }
         }
     )
@@ -408,17 +429,30 @@ private fun JobCard(job: Job, onOpen: () -> Unit, onKeep: () -> Unit, onSkip: ()
 fun PersonEditor(vm: AppViewModel, data: AppData, c: Contact, onClose: () -> Unit) {
     var note by remember(c.id) { mutableStateOf(c.note) }
     var ask by remember(c.id) { mutableStateOf(c.ask) }
+    var context by remember(c.id) { mutableStateOf("") }
+    var working by remember { mutableStateOf(false) }
     val limit = data.profile.noteCharLimit
     Dialog(
         title = c.name, onDismiss = onClose, confirm = "Save",
-        onConfirm = { vm.saveContactText(c.id, note.trim(), ask.trim()); onClose() },
-        dismiss = "Redraft", onDismissButton = { vm.redraft(c); onClose() },
+        onConfirm = { vm.saveContactText(c.id, note.trim(), ask.trim()); onClose() }, confirmEnabled = !working,
+        dismiss = "Reset to template", onDismissButton = { vm.redraft(c); onClose() },
     ) {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             Field("Connection note (leave empty for a plain request)", note, lines = 3) { note = it }
-            Muted("${note.length} of $limit characters", color = if (note.length > limit) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            Label("${note.length}/$limit", color = if (note.length > limit) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
             Gap()
             Field("Referral message, sent after they accept", ask, lines = 5) { ask = it }
+            if (data.profile.aiConfigured) {
+                Gap()
+                Field("Anything the AI should mention (optional)", context, lines = 2) { context = it }
+                ButtonRow {
+                    Btn(if (working) "Writing..." else "Write both with AI", {
+                        working = true
+                        vm.aiNote(c, context.trim()) { r -> working = false; if (r != null) { note = r.first; ask = r.second } }
+                    }, enabled = !working)
+                }
+                Muted("Uses the reasons on the card, the job posting and your resume. Read it before saving.")
+            } else Muted("Add an AI key in Settings to have these written for each person.", Modifier.padding(top = 8.dp))
         }
     }
 }
@@ -429,6 +463,8 @@ fun EmailEditor(vm: AppViewModel, data: AppData, e: EmailLead, onClose: () -> Un
     var subject by remember(e.id) { mutableStateOf(e.subject) }
     var body by remember(e.id) { mutableStateOf(e.body) }
     var attach by remember(e.id) { mutableStateOf(e.attachResume) }
+    var context by remember(e.id) { mutableStateOf("") }
+    var working by remember { mutableStateOf(false) }
     val hasResume = data.profile.resumeFileName.isNotBlank() || data.jobs.any { it.key == e.jobKey && it.tailoredResume.isNotBlank() }
     fun edited() = e.copy(to = to.trim(), subject = subject, body = body, attachResume = attach)
     Dialog(
@@ -437,7 +473,7 @@ fun EmailEditor(vm: AppViewModel, data: AppData, e: EmailLead, onClose: () -> Un
         onConfirm = {
             vm.saveEmail(if (e.status == EmailStatus.DRAFT) edited().copy(status = EmailStatus.APPROVED) else edited()); onClose()
         },
-        confirmEnabled = to.contains("@"),
+        confirmEnabled = to.contains("@") && !working,
         dismiss = if (e.status == EmailStatus.DRAFT) "Save draft" else "Cancel",
         onDismissButton = { if (e.status == EmailStatus.DRAFT) vm.saveEmail(edited()); onClose() },
     ) {
@@ -449,6 +485,15 @@ fun EmailEditor(vm: AppViewModel, data: AppData, e: EmailLead, onClose: () -> Un
                 Checkbox(checked = attach && hasResume, onCheckedChange = { attach = it }, enabled = hasResume)
                 Text(if (hasResume) "Attach resume" else "No resume uploaded yet", style = MaterialTheme.typography.bodyMedium)
             }
+            if (data.profile.aiConfigured) {
+                Field("Context for the AI, e.g. notice period, a mutual contact (optional)", context, lines = 2) { context = it }
+                ButtonRow {
+                    Btn(if (working) "Writing..." else "Write with AI", {
+                        working = true
+                        vm.aiEmail(edited(), context.trim()) { r -> working = false; if (r != null) { subject = r.first; body = r.second } }
+                    }, enabled = !working)
+                }
+            } else Muted("Add an AI key in Settings to have this written from the posting and your resume.")
         }
     }
 }
