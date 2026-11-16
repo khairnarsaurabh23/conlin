@@ -72,9 +72,9 @@ private val AppType = Typography().let { t ->
 
 @Composable
 fun isDark(mode: String): Boolean = when (mode) {
-    "dark" -> true
+    "light" -> false
     "system" -> isSystemInDarkTheme()
-    else -> false
+    else -> true
 }
 
 @Composable

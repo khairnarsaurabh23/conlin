@@ -63,7 +63,7 @@ data class Profile(
     /** New jobs scoring below this are kept out of the inbox (still listed in the Tracker). */
     val minMatch: Int = 40,
     /** "dark", "light" or "system". */
-    val theme: String = "light",
+    val theme: String = "dark",
 
     // AI writing (optional). The key stays on the phone; requests go straight to the provider.
     /** "anthropic" or "openai" (any OpenAI-compatible endpoint). */

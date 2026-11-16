@@ -255,6 +255,10 @@ object JobRunner {
             // 2.3 moved to a light, warm look; dark stays available in Settings.
             d = d.copy(profile = d.profile.copy(theme = "light"), schema = 3)
         }
+        if (d.schema < 4) {
+            // Dark is the default again; light stays available in Settings.
+            d = d.copy(profile = d.profile.copy(theme = "dark"), schema = 4)
+        }
         return d
     }
 
