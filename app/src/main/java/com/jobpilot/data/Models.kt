@@ -63,7 +63,7 @@ data class Profile(
     /** New jobs scoring below this are kept out of the inbox (still listed in the Tracker). */
     val minMatch: Int = 40,
     /** "dark", "light" or "system". */
-    val theme: String = "dark",
+    val theme: String = "light",
 
     // AI writing (optional). The key stays on the phone; requests go straight to the provider.
     /** "anthropic" or "openai" (any OpenAI-compatible endpoint). */
@@ -235,8 +235,8 @@ enum class ContactKind(val label: String) {
  */
 @Serializable
 enum class Stage(val label: String) {
-    SUGGESTED("Suggested"), APPROVED("Invite approved"), INVITED("Invited"), CONNECTED("Connected"),
-    ASK_APPROVED("Ask approved"), ASKED("Asked"), REPLIED("Replied"), REFERRED("Referred"),
+    SUGGESTED("Suggested"), APPROVED("Ready to send"), INVITED("Invited"), CONNECTED("Connected"),
+    ASK_APPROVED("Message ready to send"), ASKED("Asked"), REPLIED("Replied"), REFERRED("Referred"),
     NO_RESPONSE("No response"), DECLINED("Declined"), SKIPPED("Skipped")
 }
 

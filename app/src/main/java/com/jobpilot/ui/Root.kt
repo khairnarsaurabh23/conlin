@@ -29,6 +29,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -103,25 +105,28 @@ private fun waiting(d: AppData): Int =
 private fun TabBar(selected: Tab, inboxCount: Int, onSelect: (Tab) -> Unit) {
     Column(Modifier.background(MaterialTheme.colorScheme.background)) {
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        Row(Modifier.fillMaxWidth().navigationBarsPadding().height(50.dp)) {
+        Row(Modifier.fillMaxWidth().navigationBarsPadding().height(58.dp)) {
             Tab.entries.forEach { t ->
                 val sel = t == selected
-                Column(Modifier.weight(1f).fillMaxHeight().clickable { onSelect(t) }, horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(Modifier.fillMaxWidth().height(2.dp).background(if (sel) MaterialTheme.colorScheme.primary else Color.Transparent))
-                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                Box(Modifier.weight(1f).fillMaxHeight().clickable { onSelect(t) }, contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                t.title.lowercase(), fontFamily = Mono, fontSize = 12.5.sp,
+                                t.title, style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = if (sel) FontWeight.Medium else FontWeight.Normal,
                                 color = if (sel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             if (t == Tab.INBOX && inboxCount > 0) {
                                 Text(
-                                    "(" + (if (inboxCount > 99) "99+" else "$inboxCount") + ")", fontFamily = Mono, fontSize = 11.5.sp,
-                                    color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(start = 3.dp),
+                                    if (inboxCount > 99) "99+" else "$inboxCount", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(50))
+                                        .background(MaterialTheme.colorScheme.primary).padding(horizontal = 6.dp, vertical = 1.dp),
                                 )
                             }
                         }
+                        Spacer(Modifier.height(5.dp))
+                        Box(Modifier.width(18.dp).height(2.dp).clip(RoundedCornerShape(50)).background(if (sel) MaterialTheme.colorScheme.primary else Color.Transparent))
                     }
                 }
             }

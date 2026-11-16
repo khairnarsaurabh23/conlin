@@ -351,12 +351,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Step one of sending: budget check, copy the text, open the profile. Nothing is counted yet;
      * the user confirms afterwards whether it actually went out.
      */
-    fun openForSend(c: Contact) {
+    /**
+     * Approve and send in one go: the usual path. If today's budget is used up the item simply
+     * waits in the Send list.
+     */
+    fun approveAndSend(c: Contact) {
+        val next = c.copy(stage = if (c.stage == Stage.SUGGESTED) Stage.APPROVED else Stage.ASK_APPROVED)
+        edit { Store.updateContact(c.id) { it.copy(stage = next.stage) } }
+        openForSend(next, queued = true)
+    }
+
+    fun openForSend(c: Contact, queued: Boolean = false) {
         val d = Store.data
         val now = System.currentTimeMillis()
         val isInvite = c.stage == Stage.APPROVED
         val check = if (isInvite) Guard.canInvite(d, now) else Guard.canMessage(d, now)
-        if (!check.ok) { toast(check.reason); return }
+        if (!check.ok) { toast(check.reason + if (queued) ". It is waiting in Send." else ""); return }
         val text = if (isInvite) c.note else c.ask
         if (text.isNotBlank()) {
             ctx.getSystemService(ClipboardManager::class.java)

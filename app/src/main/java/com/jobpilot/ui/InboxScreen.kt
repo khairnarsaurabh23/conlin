@@ -154,19 +154,41 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
     val needsSetup = p.name.isBlank() || p.skillList().isEmpty() || data.searches.isEmpty()
 
     Column(Modifier.fillMaxSize()) {
-        Header("Inbox") {
+        val hour = remember(now) { java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) }
+        val first = p.name.trim().split(" ").first()
+        Header((if (hour < 12) "Good morning" else if (hour < 17) "Good afternoon" else "Good evening") + if (first.isNotBlank()) ", $first" else "") {
             Quiet(if (busy) "Checking" else "Check now", { vm.runSearch() }, enabled = !busy && data.searches.isNotEmpty())
             IconButton(onClick = { vm.showSettings(true) }) { Icon(Icons.Default.Settings, "Settings") }
         }
+        val total = InboxTab.entries.sumOf { count(it) }
+        Muted(
+            when {
+                total == 0 -> "You're all caught up."
+                count(InboxTab.SEND) > 0 -> "${count(InboxTab.SEND)} ready to send, ${total - count(InboxTab.SEND)} more to look at."
+                else -> "$total things to look at."
+            }, Modifier.padding(start = 20.dp, end = 20.dp, bottom = 6.dp)
+        )
         Seg(InboxTab.entries, tab, { t -> count(t).let { n -> if (n > 0) "${t.label} $n" else t.label } }) { chosen = it }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         if (tab == InboxTab.SEND || tab == InboxTab.REFERRALS || tab == InboxTab.NETWORK) SafetyLine(vm, data, now) { warning = true }
 
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 24.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 24.dp)) {
             if (needsSetup) item(key = "setup") { Column(Modifier.padding(bottom = 10.dp)) { SetupCard(vm, data) } }
+            // Something was opened in LinkedIn and is waiting for a yes or no: show it wherever you are.
+            if (tab != InboxTab.SEND) {
+                val jobsByKey = data.jobs.associateBy { it.key }
+                items(
+                    data.contacts.filter { it.openedAt > 0 && (it.stage == Stage.APPROVED || it.stage == Stage.ASK_APPROVED) },
+                    key = { "confirm-${it.id}" },
+                ) { c -> Column(Modifier.animateItem().padding(bottom = 10.dp)) { SendPersonCard(vm, data, c, jobsByKey[c.jobKey], now) } }
+            } else if (cards.isNotEmpty()) item(key = "send-hint") {
+                Muted(
+                    "LinkedIn doesn't let apps send for you, so each one takes a tap: JobPilot copies the text and opens the profile, you press Connect or Message and paste, then confirm here.",
+                    Modifier.padding(start = 4.dp, end = 4.dp, bottom = 12.dp),
+                )
+            }
             if (cards.isEmpty()) item(key = "empty") { EmptyInbox(data, tab) }
             items(cards, key = { it.key }) { card ->
-                Column(Modifier.animateItem().padding(bottom = 10.dp)) {
+                Column(Modifier.animateItem().padding(bottom = 12.dp)) {
                     when (card) {
                         is Card.SendPerson -> SendPersonCard(vm, data, card.c, card.job, now)
                         is Card.SendEmails -> Panel {
@@ -180,20 +202,22 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                             vm, data, card.c, card.job, "follow-up", "No reply in ${data.profile.followUpDays} days. Send one short follow-up?",
                             JobRunner.draftFollowUp(data.profile, card.c, card.job),
                         ) {
-                            Btn("Approve follow-up", { vm.approveFollowUp(card.c) }, primary = true)
+                            Btn("Add to Send", { vm.approveFollowUp(card.c) }, primary = true)
                             Quiet("No response", { vm.setStage(card.c.id, Stage.NO_RESPONSE) })
                             Quiet("They replied", { vm.setStage(card.c.id, Stage.REPLIED) })
                         }
                         is Card.Ask -> PersonCard(vm, data, card.c, card.job, "referral ask", "Connected. Ask for a referral?", card.c.ask) {
-                            Btn("Approve", { vm.approveAsk(card.c.id) }, primary = true)
-                            Quiet("Edit", { editPerson = card.c })
+                            Btn("Send message", { vm.approveAndSend(card.c) }, primary = true)
+                            Quiet("Later", { vm.approveAsk(card.c.id) })
+                            Quiet(if (data.profile.aiConfigured) "Edit / AI" else "Edit", { editPerson = card.c })
                             Quiet("Skip", { vm.skipContact(card.c.id) })
                         }
                         is Card.Connect -> PersonCard(
                             vm, data, card.c, card.job, "connection request", "Send a connection request?",
                             card.c.note.ifBlank { "No note. A plain request will be sent." },
                         ) {
-                            Btn("Approve", { vm.approveInvite(card.c.id) }, primary = true)
+                            Btn("Send request", { vm.approveAndSend(card.c) }, primary = true)
+                            Quiet("Later", { vm.approveInvite(card.c.id) })
                             Quiet(if (data.profile.aiConfigured) "Edit / AI" else "Edit", { editPerson = card.c })
                             Quiet("Skip", { vm.skipContact(card.c.id) })
                         }
@@ -269,10 +293,7 @@ private fun SetupCard(vm: AppViewModel, data: AppData) {
         Label("setup")
         Gap(4)
         steps.forEach { (label, done) ->
-            Row(Modifier.padding(vertical = 2.dp)) {
-                Text(if (done) "[x]" else "[ ]", fontFamily = Mono, fontSize = 13.sp, color = if (done) ok else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 8.dp))
-                Text(label, style = MaterialTheme.typography.bodyMedium, color = if (done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
-            }
+            Mark(if (done) "+" else "!", if (done) "$label (done)" else label, if (done) ok else warn)
         }
     }
 }

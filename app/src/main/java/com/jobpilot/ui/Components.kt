@@ -8,24 +8,26 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -33,7 +35,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -62,10 +63,12 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 
-private val PanelShape = RoundedCornerShape(4.dp)
-private val ButtonShape = RoundedCornerShape(4.dp)
+private val PanelShape = RoundedCornerShape(16.dp)
+private val ButtonShape = RoundedCornerShape(10.dp)
+private val Pill = RoundedCornerShape(50)
+
+private fun String.cap() = replaceFirstChar { it.uppercase() }
 
 /** A full-screen page: handles system bars and the keyboard in one place. */
 @Composable
@@ -84,23 +87,20 @@ fun Page(
     }
 }
 
-/** Screen header written as a path: jobpilot/inbox. */
 @Composable
 fun Header(title: String, onBack: (() -> Unit)? = null, actions: @Composable RowScope.() -> Unit = {}) {
     Row(
-        Modifier.fillMaxWidth().padding(start = if (onBack != null) 4.dp else 16.dp, end = 6.dp, top = 6.dp)
-            .heightIn(min = 46.dp),
+        Modifier.fillMaxWidth().padding(start = if (onBack != null) 4.dp else 20.dp, end = 8.dp, top = 12.dp, bottom = 6.dp)
+            .heightIn(min = 48.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-        Text("jobpilot/", fontFamily = Mono, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
         Text(
-            title.lowercase().replace(' ', '-'), fontFamily = Mono, fontSize = 15.sp, fontWeight = FontWeight.Medium,
-            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+            title, style = MaterialTheme.typography.headlineSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
         )
         actions()
     }
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
 @Composable
@@ -110,25 +110,25 @@ fun Panel(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null, content:
             .background(MaterialTheme.colorScheme.surface)
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, PanelShape)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(12.dp),
+            .padding(16.dp),
         content = content,
     )
 }
 
 @Composable
 fun Btn(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, primary: Boolean = false, enabled: Boolean = true) {
-    val pad = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+    val pad = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
     if (primary) {
         Button(
-            onClick = onClick, modifier = modifier.heightIn(min = 36.dp), enabled = enabled, shape = ButtonShape,
+            onClick = onClick, modifier = modifier.heightIn(min = 40.dp), enabled = enabled, shape = ButtonShape,
             colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.onSurface, contentColor = MaterialTheme.colorScheme.surface,
+                containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary,
             ),
             contentPadding = pad,
         ) { Text(text, maxLines = 1) }
     } else {
         OutlinedButton(
-            onClick = onClick, modifier = modifier.heightIn(min = 36.dp), enabled = enabled, shape = ButtonShape,
+            onClick = onClick, modifier = modifier.heightIn(min = 40.dp), enabled = enabled, shape = ButtonShape,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = if (enabled) 1f else 0.4f)),
             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
             contentPadding = pad,
@@ -138,45 +138,41 @@ fun Btn(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, primar
 
 /** Low-emphasis text action. */
 @Composable
-fun Quiet(text: String, onClick: () -> Unit, enabled: Boolean = true, color: Color = MaterialTheme.colorScheme.primary) {
+fun Quiet(text: String, onClick: () -> Unit, enabled: Boolean = true, color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
     TextButton(
-        onClick = onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp), shape = ButtonShape,
+        onClick = onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp), shape = ButtonShape,
         colors = ButtonDefaults.textButtonColors(contentColor = color),
     ) { Text(text, maxLines = 1) }
 }
 
-/** Section heading written like a code comment, with an optional count on the right. */
 @Composable
 fun SectionTitle(text: String, modifier: Modifier = Modifier, trailing: String = "") {
-    Row(modifier.fillMaxWidth().padding(top = 20.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            "// " + text.lowercase(), fontFamily = Mono, fontSize = 12.5.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f),
-        )
-        if (trailing.isNotBlank()) Label(trailing)
+    Row(modifier.fillMaxWidth().padding(top = 24.dp, bottom = 8.dp), verticalAlignment = Alignment.Bottom) {
+        Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        if (trailing.isNotBlank()) Muted(trailing)
     }
 }
 
-/** Small monospace label: card kinds, counts, timestamps. */
+/** Small caption: card kinds, counts, timestamps. */
 @Composable
 fun Label(text: String, modifier: Modifier = Modifier, color: Color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines: Int = 1) {
-    Text(text, modifier = modifier, style = MaterialTheme.typography.labelSmall, color = color, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+    Text(text.cap(), modifier = modifier, style = MaterialTheme.typography.labelSmall, color = color, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
 }
 
-/** Bordered monospace tag, e.g. a status. */
+/** Soft tinted pill, e.g. a status. */
 @Composable
 fun Tag(text: String, color: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
     Text(
-        text.lowercase(), style = MaterialTheme.typography.labelSmall, color = color, maxLines = 1,
-        modifier = Modifier.border(1.dp, color.copy(alpha = 0.45f), RoundedCornerShape(3.dp)).padding(horizontal = 5.dp, vertical = 1.dp),
+        text.cap(), style = MaterialTheme.typography.labelSmall, color = color, maxLines = 1,
+        modifier = Modifier.clip(Pill).background(color.copy(alpha = 0.12f)).padding(horizontal = 9.dp, vertical = 3.dp),
     )
 }
 
-/** One line of evidence, marked the way a diff marks lines: + for, - against, ! caution. */
+/** One line of evidence with a coloured dot: green counts for, amber counts against. */
 @Composable
 fun Mark(sign: String, text: String, color: Color, modifier: Modifier = Modifier, maxLines: Int = 3) {
-    Row(modifier.padding(vertical = 1.dp)) {
-        Text(sign, fontFamily = Mono, fontSize = 13.sp, color = color, modifier = Modifier.width(16.dp))
+    Row(modifier.padding(vertical = 2.dp)) {
+        Box(Modifier.padding(top = 7.dp, end = 9.dp).size(6.dp).clip(CircleShape).background(color))
         Text(text, style = MaterialTheme.typography.bodySmall, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -186,40 +182,38 @@ fun Muted(text: String, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_V
     Text(text, modifier = modifier, style = MaterialTheme.typography.bodySmall, color = color, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
 }
 
-/** Drafted text shown as a quotation: a rule down the left side. */
+/** Drafted text, set apart on a tinted block. */
 @Composable
 fun Quote(text: String, modifier: Modifier = Modifier, maxLines: Int = 4) {
-    Row(modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
-        Box(Modifier.width(2.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
-        Text(
-            text, style = MaterialTheme.typography.bodyMedium, maxLines = maxLines, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = 10.dp),
-        )
-    }
+    Text(
+        text, style = MaterialTheme.typography.bodyMedium, maxLines = maxLines, overflow = TextOverflow.Ellipsis,
+        modifier = modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp),
+    )
 }
 
 @Composable
 fun ScoreText(score: Int) {
-    Text("$score%", color = scoreColor(score), fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+    Text("$score%", color = scoreColor(score), fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodyMedium)
 }
 
-/** Underlined text tabs. */
+/** A row of pills; the selected one is filled. */
 @Composable
 fun <T> Seg(options: List<T>, selected: T, label: (T) -> String, modifier: Modifier = Modifier, onSelect: (T) -> Unit) {
-    Row(modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
+    Row(
+        modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         options.forEach { o ->
             val sel = o == selected
-            Column(
-                Modifier.clip(RoundedCornerShape(3.dp)).clickable { onSelect(o) }.padding(horizontal = 8.dp, vertical = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    label(o).lowercase(), fontFamily = Mono, fontSize = 12.5.sp,
-                    color = if (sel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(4.dp))
-                Box(Modifier.width(20.dp).height(2.dp).background(if (sel) MaterialTheme.colorScheme.primary else Color.Transparent))
-            }
+            Text(
+                label(o).cap(), style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (sel) FontWeight.Medium else FontWeight.Normal,
+                color = if (sel) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.clip(Pill)
+                    .background(if (sel) MaterialTheme.colorScheme.onSurface else Color.Transparent)
+                    .border(1.dp, if (sel) Color.Transparent else MaterialTheme.colorScheme.outlineVariant, Pill)
+                    .clickable { onSelect(o) }.padding(horizontal = 14.dp, vertical = 7.dp),
+            )
         }
     }
 }
@@ -231,15 +225,12 @@ fun Meter(label: String, value: Int, max: Int, modifier: Modifier = Modifier) {
     val full = value >= max
     Column(modifier) {
         Row {
-            Label(label.lowercase(), Modifier.weight(1f))
-            Label("$value/$max", color = if (full) warn else MaterialTheme.colorScheme.onSurface)
+            Muted(label, Modifier.weight(1f))
+            Muted("$value of $max", color = if (full) warn else MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Spacer(Modifier.height(4.dp))
-        Box(Modifier.fillMaxWidth().height(3.dp).background(MaterialTheme.colorScheme.outlineVariant)) {
-            Box(
-                Modifier.fillMaxWidth(frac).height(3.dp)
-                    .background(if (full) warn else MaterialTheme.colorScheme.primary)
-            )
+        Spacer(Modifier.height(5.dp))
+        Box(Modifier.fillMaxWidth().height(5.dp).clip(Pill).background(MaterialTheme.colorScheme.outlineVariant)) {
+            Box(Modifier.fillMaxWidth(frac).height(5.dp).clip(Pill).background(if (full) warn else MaterialTheme.colorScheme.primary))
         }
     }
 }
@@ -251,7 +242,7 @@ fun Field(
 ) {
     OutlinedTextField(
         value = value, onValueChange = onChange, label = { Text(label) },
-        singleLine = lines == 1, minLines = lines, shape = ButtonShape,
+        singleLine = lines == 1, minLines = lines, shape = RoundedCornerShape(12.dp),
         visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(keyboardType = keyboard),
         colors = OutlinedTextFieldDefaults.colors(
@@ -259,6 +250,8 @@ fun Field(
             focusedBorderColor = MaterialTheme.colorScheme.primary,
             focusedLabelColor = MaterialTheme.colorScheme.primary,
             cursorColor = MaterialTheme.colorScheme.primary,
+            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+            focusedContainerColor = MaterialTheme.colorScheme.surface,
         ),
         modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
     )
@@ -284,7 +277,7 @@ fun Toggle(label: String, checked: Boolean, hint: String = "", onChange: (Boolea
         Switch(
             checked = checked, onCheckedChange = onChange,
             colors = SwitchDefaults.colors(
-                checkedTrackColor = MaterialTheme.colorScheme.onSurface, checkedThumbColor = MaterialTheme.colorScheme.surface,
+                checkedTrackColor = MaterialTheme.colorScheme.primary, checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
                 uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant, uncheckedBorderColor = MaterialTheme.colorScheme.outline,
                 uncheckedThumbColor = MaterialTheme.colorScheme.outline,
             ),
@@ -300,21 +293,21 @@ fun Dialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(title, style = MaterialTheme.typography.titleMedium) },
+        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
         text = content,
-        confirmButton = { Quiet(confirm, onConfirm, confirmEnabled, MaterialTheme.colorScheme.onSurface) },
-        dismissButton = { Quiet(dismiss, onDismissButton ?: onDismiss) },
-        shape = RoundedCornerShape(6.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        confirmButton = { Quiet(confirm, onConfirm, confirmEnabled, MaterialTheme.colorScheme.primary) },
+        dismissButton = { if (dismiss.isNotBlank()) Quiet(dismiss, onDismissButton ?: onDismiss) },
+        shape = RoundedCornerShape(20.dp),
+        containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
     )
 }
 
 @Composable
 fun EmptyNote(title: String, body: String) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 36.dp)) {
-        Text(title, style = MaterialTheme.typography.titleSmall)
-        Spacer(Modifier.height(6.dp))
+    Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 40.dp)) {
+        Text(title, style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(8.dp))
         Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -325,7 +318,7 @@ fun Gap(h: Int = 8) = Spacer(Modifier.height(h.dp))
 @Composable
 fun ButtonRow(modifier: Modifier = Modifier, content: @Composable RowScope.() -> Unit) {
     Row(
-        modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 10.dp),
+        modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically, content = content,
     )
 }

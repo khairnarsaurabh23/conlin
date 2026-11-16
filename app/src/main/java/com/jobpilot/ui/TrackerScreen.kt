@@ -179,9 +179,16 @@ private fun PeopleList(vm: AppViewModel, data: AppData) {
                             }
                             ButtonRow {
                                 when (c.stage) {
-                                    Stage.SUGGESTED -> Btn("Approve invite", { vm.approveInvite(c.id) }, primary = true)
+                                    Stage.SUGGESTED -> Btn("Send request", { vm.approveAndSend(c) }, primary = true)
+                                    Stage.APPROVED, Stage.ASK_APPROVED -> if (c.openedAt > 0) {
+                                        Btn("Yes, it was sent", { vm.confirmSent(c, true) }, primary = true)
+                                        Btn("Not sent", { vm.confirmSent(c, false) })
+                                    } else {
+                                        Btn("Send now", { vm.openForSend(c) }, primary = true)
+                                        Btn("Move back", { vm.unapprove(c.id) })
+                                    }
                                     Stage.INVITED -> Btn("They accepted", { vm.setStage(c.id, Stage.CONNECTED) }, primary = true)
-                                    Stage.CONNECTED -> Btn("Approve referral ask", { vm.approveAsk(c.id) }, primary = true)
+                                    Stage.CONNECTED -> Btn("Send referral message", { vm.approveAndSend(c) }, primary = true)
                                     Stage.ASKED -> {
                                         Btn("They replied", { vm.setStage(c.id, Stage.REPLIED) }, primary = true)
                                         Btn("Declined", { vm.setStage(c.id, Stage.DECLINED) })
