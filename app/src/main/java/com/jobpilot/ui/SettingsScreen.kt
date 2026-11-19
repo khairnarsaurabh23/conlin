@@ -48,7 +48,15 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
         busy?.let { BusyBar(it) }
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
 
-            SectionTitle("Jobs you want", Modifier.padding(top = 0.dp))
+            Panel(Modifier.padding(top = 4.dp), onClick = { vm.showAnswers(true) }) {
+                Text("Application answers", style = MaterialTheme.typography.titleSmall)
+                Muted(
+                    if (data.profile.answers.isEmpty) "Not filled in yet. Notice period, salary, work authorization and more, used to fill application forms."
+                    else "Used to fill application forms. Tap to edit."
+                )
+            }
+
+            SectionTitle("Jobs you want")
             data.searches.forEach { s ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -127,6 +135,11 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
             Field("Second subject to compare (optional)", p.emailSubjectB) { p = p.copy(emailSubjectB = it) }
             Field("Second body to compare (optional)", p.emailBodyB, lines = 4) { p = p.copy(emailBodyB = it) }
             NumField("Most emails per day", p.dailyEmailCap) { p = p.copy(dailyEmailCap = it.coerceIn(1, 100)) }
+            Toggle(
+                "Send email applications automatically", p.autoSendEmails,
+                "Only when the match is high enough and your resume is ready for that job. Needs the Gmail App Password below. Everything else still waits for you.",
+            ) { p = p.copy(autoSendEmails = it) }
+            if (p.autoSendEmails) NumField("Minimum match % to send automatically", p.autoSendMin) { p = p.copy(autoSendMin = it.coerceIn(50, 100)) }
 
             SectionTitle("Gmail")
             Muted(

@@ -72,6 +72,11 @@ data class Profile(
     val detailFetchLimit: Int = 15,
     /** New jobs scoring below this are kept out of the inbox (still listed in the Tracker). */
     val minMatch: Int = 40,
+    /** Answers used to fill application forms. Edited in the app. */
+    val answers: Answers = Answers(),
+    /** Send email applications with no review when the match is at least [autoSendMin] and the resume is ready. */
+    val autoSendEmails: Boolean = false,
+    val autoSendMin: Int = 75,
     /** "dark", "light" or "system". */
     val theme: String = "dark",
 
@@ -208,7 +213,45 @@ data class Job(
     val tailored: TailoredResume? = null,
     /** Categories: remote, remote-elsewhere, abroad, home, visa, startup. */
     val tags: List<String> = emptyList(),
+    val appliedAt: Long = 0,
+    /** The application page was opened; waiting for the user to say whether they applied. */
+    val applyOpenedAt: Long = 0,
 )
+
+@Serializable
+data class QA(val q: String = "", val a: String = "")
+
+/** Standard answers for application forms. Everything is optional and editable in the app. */
+@Serializable
+data class Answers(
+    val city: String = "",
+    val currentCompany: String = "",
+    val currentTitle: String = "",
+    val noticePeriod: String = "",
+    val currentCtc: String = "",
+    val expectedCtc: String = "",
+    val workAuthorization: String = "",
+    /** "Yes" or "No" (or a sentence starting with one). */
+    val needsSponsorship: String = "",
+    val willingToRelocate: String = "",
+    val startDate: String = "",
+    val github: String = "",
+    val portfolio: String = "",
+    val howHeard: String = "LinkedIn",
+    val gender: String = "",
+    /** Questions that come up often, with your answer. Matched against form labels. */
+    val custom: List<QA> = emptyList(),
+) {
+    fun summary(): String = listOf(
+        "City" to city, "Current company" to currentCompany, "Current title" to currentTitle,
+        "Notice period" to noticePeriod, "Current salary" to currentCtc, "Expected salary" to expectedCtc,
+        "Work authorization" to workAuthorization, "Needs visa sponsorship" to needsSponsorship,
+        "Willing to relocate" to willingToRelocate, "Can start" to startDate, "GitHub" to github, "Portfolio" to portfolio,
+    ).filter { it.second.isNotBlank() }.joinToString("\n") { "${it.first}: ${it.second}" } +
+        custom.filter { it.q.isNotBlank() }.joinToString("") { "\nQ: ${it.q}\nA: ${it.a}" }
+
+    val isEmpty: Boolean get() = listOf(city, noticePeriod, expectedCtc, workAuthorization).all { it.isBlank() }
+}
 
 @Serializable
 data class ResumeRole(

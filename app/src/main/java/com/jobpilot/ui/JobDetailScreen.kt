@@ -20,6 +20,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.jobpilot.core.ApplyVia
+import com.jobpilot.core.Readiness
 import com.jobpilot.data.AppData
 import com.jobpilot.data.Job
 import com.jobpilot.data.JobStatus
@@ -71,6 +73,21 @@ fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHo
             job.cautions.forEach { Mark("-", it, warn) }
             if (job.missingSkills.isNotEmpty() && job.detailsFetched) Mark("-", "Doesn't mention " + job.missingSkills.joinToString(", "), MaterialTheme.colorScheme.onSurfaceVariant)
             if (job.reasons.isEmpty() && job.cautions.isEmpty()) Muted("Not scored yet.")
+
+            val ready = Readiness.of(job, p)
+            SectionTitle("Ready to apply?", trailing = ready.level.label)
+            Muted(ready.note)
+            if (ready.shown.isNotEmpty()) Mark("+", "Your resume shows: " + ready.shown.take(6).joinToString(", "), ok, maxLines = 2)
+            if (ready.unshown.isNotEmpty()) Mark("-", "You have, but your resume doesn't show: " + ready.unshown.joinToString(", "), warn, maxLines = 3)
+            if (ready.gaps.isNotEmpty()) Mark("-", "Posting also asks for: " + ready.gaps.take(6).joinToString(", "), MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+            if (job.appliedAt == 0L) ButtonRow {
+                when (Readiness.via(job)) {
+                    ApplyVia.FORM -> Btn("Apply (" + Readiness.formName(job) + ")", { vm.startApply(listOf(job.key)) }, primary = ready.level == Readiness.Level.READY)
+                    ApplyVia.LINKEDIN -> Btn("Apply on LinkedIn", { vm.applyOnLinkedIn(job) }, primary = ready.level == Readiness.Level.READY)
+                    ApplyVia.EMAIL -> Btn("Draft the email", { vm.queueEmailsFromJob(job) }, primary = ready.level == Readiness.Level.READY)
+                }
+                Quiet("Mark applied", { vm.markApplied(job.key) })
+            } else Muted("Applied " + java.text.DateFormat.getDateInstance().format(java.util.Date(job.appliedAt)) + ".", Modifier.padding(top = 6.dp))
 
             SectionTitle("Resume for this job")
             val saved = job.tailored

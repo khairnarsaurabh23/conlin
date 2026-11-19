@@ -21,6 +21,7 @@ import com.jobpilot.core.AiTasks
 import com.jobpilot.core.Tailor
 import com.jobpilot.core.Why
 import com.jobpilot.data.ActionKind
+import com.jobpilot.data.Answers
 import com.jobpilot.data.AppData
 import com.jobpilot.data.Contact
 import com.jobpilot.data.EmailLead
@@ -65,6 +66,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val openJob = _openJob.asStateFlow()
     private val _showSettings = MutableStateFlow(false)
     val showSettings = _showSettings.asStateFlow()
+    private val _showAnswers = MutableStateFlow(false)
+    val showAnswers = _showAnswers.asStateFlow()
+
+    /** Jobs being applied to one after another in the Browse tab. */
+    private val _applyQueue = MutableStateFlow<List<String>>(emptyList())
+    val applyQueue = _applyQueue.asStateFlow()
+    private val _applyIndex = MutableStateFlow(0)
+    val applyIndex = _applyIndex.asStateFlow()
+    val applyKey: String? get() = _applyQueue.value.getOrNull(_applyIndex.value)
     private val _reportFile = MutableStateFlow<File?>(null)
     val reportFile = _reportFile.asStateFlow()
 
@@ -88,6 +98,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setTab(t: Tab) { _tab.value = t }
     fun openJob(key: String?) { _openJob.value = key }
     fun showSettings(v: Boolean) { _showSettings.value = v }
+    fun showAnswers(v: Boolean) { _showAnswers.value = v }
     fun closeReport() { _reportFile.value = null }
     fun toast(msg: String) { _toast.value = msg }
     fun toastShown() { _toast.value = null }
@@ -518,6 +529,85 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------------- Shared into the app ----------------
+
+    // ---------------- Applying ----------------
+
+    fun saveAnswers(a: Answers, name: String, email: String, phone: String, linkedin: String, years: String) = edit {
+        Store.setProfile(
+            Store.data.profile.copy(
+                answers = a.copy(custom = a.custom.filter { it.q.isNotBlank() || it.a.isNotBlank() }),
+                name = name.trim(), email = email.trim(), phone = phone.trim(), linkedinUrl = linkedin.trim(), yearsExperience = years.trim(),
+            )
+        )
+        toast("Answers saved")
+    }
+
+    /** Opens each job's application page in Browse, one after another, filled in from your answers. */
+    fun startApply(keys: List<String>) {
+        if (keys.isEmpty()) { toast("Nothing to apply to"); return }
+        _applyQueue.value = keys
+        _applyIndex.value = 0
+        openApply(keys.first())
+    }
+
+    private fun openApply(key: String) {
+        val job = Store.data.jobs.firstOrNull { it.key == key } ?: return
+        _browserJob.value = key
+        _browserTag.value = ""
+        _browserUrl.value = job.applyUrl.ifBlank { job.url }
+        _openJob.value = null
+        _tab.value = Tab.LINKEDIN
+        edit { Store.updateJob(key) { it.copy(applyOpenedAt = System.currentTimeMillis()) } }
+    }
+
+    fun applyNext(markApplied: Boolean) {
+        applyKey?.let { if (markApplied) markApplied(it) }
+        val next = _applyIndex.value + 1
+        if (next >= _applyQueue.value.size) {
+            stopApply()
+            toast(if (markApplied) "That was the last one" else "Done with this round")
+        } else {
+            _applyIndex.value = next
+            openApply(_applyQueue.value[next])
+        }
+    }
+
+    fun stopApply() {
+        _applyQueue.value = emptyList()
+        _applyIndex.value = 0
+    }
+
+    fun markApplied(key: String, auto: Boolean = false) = edit {
+        val job = Store.data.jobs.firstOrNull { it.key == key } ?: return@edit
+        if (job.appliedAt > 0 && auto) return@edit
+        Store.updateJob(key) {
+            it.copy(
+                status = if (it.status == JobStatus.INTERVIEW) it.status else JobStatus.APPLIED,
+                appliedAt = if (it.appliedAt > 0) it.appliedAt else System.currentTimeMillis(), applyOpenedAt = 0,
+            )
+        }
+        toast(if (auto) "Looks like it went through. Marked as applied." else "Marked as applied")
+    }
+
+    fun clearApplyOpened(key: String) = edit { Store.updateJob(key) { it.copy(applyOpenedAt = 0) } }
+
+    fun applyOnLinkedIn(job: Job) {
+        openUrl(job.url)
+        edit { Store.updateJob(job.key) { it.copy(applyOpenedAt = System.currentTimeMillis()) } }
+        toast(if (job.tailoredResume.isNotBlank()) "Tip: share the tailored resume from the job page so it's on your phone for Easy Apply." else "Apply in LinkedIn, then come back and confirm.")
+    }
+
+    /** Finds or creates the email draft for a job that takes applications by email. */
+    fun emailFor(job: Job, done: (EmailLead?) -> Unit) = edit {
+        val existing = Store.data.emails.firstOrNull { it.jobKey == job.key && it.status != EmailStatus.SKIPPED }
+        if (existing == null) JobRunner.queueEmails(listOf(job))
+        done(Store.data.emails.firstOrNull { it.jobKey == job.key && it.status != EmailStatus.SKIPPED })
+    }
+
+    fun aiFormAnswers(questions: List<String>, done: (List<String>?) -> Unit) {
+        val job = Store.data.jobs.firstOrNull { it.key == (applyKey ?: _browserJob.value) }
+        aiCall("Drafting answers", { AiTasks.formAnswers(Store.data, job, questions) }, done)
+    }
 
     fun saveWebJob(url: String, title: String, company: String, location: String, text: String) =
         launchBusy("Saving the job") { toast(JobRunner.saveWebJob(url, title, company, location, text)) }

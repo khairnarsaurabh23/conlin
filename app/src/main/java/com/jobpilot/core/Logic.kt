@@ -254,7 +254,7 @@ object Why {
 object Tailor {
     data class Result(val summary: String, val skills: List<String>, val missingKeywords: List<String>)
 
-    private val DICT = listOf(
+    val DICT = listOf(
         "Kotlin", "Java", "Android", "Jetpack Compose", "Swift", "iOS", "Flutter", "Dart", "React Native", "React",
         "Angular", "Vue", "Next.js", "JavaScript", "TypeScript", "HTML", "CSS", "Node.js", "Express", "Python", "Django",
         "Flask", "FastAPI", "Go", "Rust", "C++", "C#", ".NET", "PHP", "Laravel", "Ruby", "Rails", "Spring Boot", "Spring",
@@ -478,5 +478,142 @@ object Classify {
         }
         if (STARTUP_SOURCES.any { job.source.lowercase().contains(it) } || STARTUP_TEXT.containsMatchIn(text)) tags += "startup"
         return Result(tags.distinct(), reasons, cautions)
+    }
+}
+
+
+/** How a kept job gets applied to. */
+enum class ApplyVia(val label: String) { EMAIL("By email"), FORM("Company form"), LINKEDIN("On LinkedIn") }
+
+/**
+ * Is the resume ready for this job? Compares what the posting asks for with what the resume
+ * (or the tailored version for this job) actually shows.
+ */
+object Readiness {
+    enum class Level(val label: String) { READY("Ready to apply"), TAILOR("Tailor first"), WEAK("Weak fit") }
+
+    data class Result(
+        val level: Level,
+        /** Asked for, and the resume shows it. */
+        val shown: List<String>,
+        /** Asked for, listed in your skills, but the resume doesn't show it: tailoring fixes this. */
+        val unshown: List<String>,
+        /** Asked for, and not in your profile at all. */
+        val gaps: List<String>,
+        val note: String = "",
+    )
+
+    fun via(job: Job): ApplyVia = when {
+        job.emailsFound.any { Emails.isRecruitingAddress(it) } -> ApplyVia.EMAIL
+        job.source.startsWith("LinkedIn") -> ApplyVia.LINKEDIN
+        else -> ApplyVia.FORM
+    }
+
+    /** "Greenhouse form", "Lever form", ... from the apply link. */
+    fun formName(job: Job): String {
+        val u = (job.applyUrl.ifBlank { job.url }).lowercase()
+        return when {
+            "greenhouse" in u -> "Greenhouse form"
+            "lever.co" in u -> "Lever form"
+            "ashbyhq" in u -> "Ashby form"
+            "myworkdayjobs" in u || "workday" in u -> "Workday form"
+            "smartrecruiters" in u -> "SmartRecruiters form"
+            "wellfound" in u -> "Wellfound"
+            "ycombinator" in u || "workatastartup" in u -> "YC Work at a Startup"
+            "news.ycombinator" in u -> "See the HN post"
+            else -> "Company form"
+        }
+    }
+
+    fun of(job: Job, p: Profile): Result {
+        val posting = (job.title + "\n" + job.description + "\n" + job.criteria).lowercase()
+        val skills = p.skillList()
+        val skillSet = skills.map { it.lowercase() }.toSet()
+        val terms = (Tailor.DICT + skills).distinctBy { it.lowercase() }.filter { Matcher.containsTerm(posting, it) }
+        val t = job.tailored
+        val resume = when {
+            t != null -> (listOf(t.headline, t.summary) + t.skills + t.experience.flatMap { it.bullets + it.title } + t.projects.flatMap { it.bullets + it.name }).joinToString("\n")
+            p.resumeText.isNotBlank() -> p.resumeText
+            else -> skills.joinToString(", ") + "\n" + p.experienceText
+        }.lowercase()
+        val shown = terms.filter { Matcher.containsTerm(resume, it) }
+        val rest = terms.filterNot { it in shown }
+        val unshown = rest.filter { it.lowercase() in skillSet }
+        val gaps = rest.filterNot { it.lowercase() in skillSet }
+        val coverage = if (terms.isEmpty()) 100 else shown.size * 100 / terms.size
+        val level = when {
+            job.matchScore < p.minMatch -> Level.WEAK
+            job.description.isBlank() -> Level.TAILOR
+            t != null -> Level.READY
+            unshown.isNotEmpty() -> Level.TAILOR
+            terms.size >= 3 && coverage < 60 -> Level.TAILOR
+            else -> Level.READY
+        }
+        val note = when {
+            level == Level.WEAK -> "Match is under your ${p.minMatch}% minimum."
+            job.description.isBlank() -> "Load the full posting to check your resume against it."
+            t != null -> "Using the resume tailored for this job."
+            p.resumeText.isBlank() -> "Checked against your skills list. Read your resume in Settings for a real check."
+            level == Level.TAILOR && unshown.isNotEmpty() -> "Your resume doesn't show some skills you have that this posting asks for."
+            level == Level.TAILOR -> "Your resume shows only $coverage% of what this posting asks for."
+            else -> "Your resume shows $coverage% of what this posting asks for."
+        }
+        return Result(level, shown, unshown, gaps, note)
+    }
+}
+
+/** Builds the rules the form filler uses, from the saved answers. */
+object FormRules {
+    /** Escapes a saved question so it can be matched literally (also valid as a JavaScript pattern). */
+    fun esc(s: String) = Regex("[.*+?^\${}()|\\[\\]\\\\/]").replace(s.trim().lowercase()) { "\\" + it.value }
+
+    private fun yesNo(a: String): String? = when {
+        a.trim().lowercase().startsWith("yes") -> "Yes"
+        a.trim().lowercase().startsWith("no") -> "No"
+        else -> null
+    }
+
+    /** Ordered (regex, value) pairs; the first match wins. Custom questions come first. */
+    fun text(p: Profile): List<Pair<String, String>> {
+        val a = p.answers
+        val parts = p.name.trim().split(Regex("\\s+"))
+        val first = parts.firstOrNull().orEmpty()
+        val last = if (parts.size > 1) parts.last() else ""
+        val email = p.email.ifBlank { p.smtpUser }
+        val out = mutableListOf<Pair<String, String>>()
+        a.custom.filter { it.q.isNotBlank() && it.a.isNotBlank() }.forEach { out += esc(it.q) to it.a }
+        out += "first.?name|given.?name|fname" to first
+        out += "last.?name|surname|family.?name|lname" to last
+        out += "^(?!.*(company|employer|school|university|college|reference|referr|manager|emergency)).*(full.?name|your name|\\bname\\b)" to p.name
+        out += "e-?mail" to email
+        out += "phone|mobile|contact.?number|whatsapp" to p.phone
+        out += "linkedin" to p.linkedinUrl
+        out += "github" to a.github
+        out += "portfolio|personal.?(site|website)|website|blog|other.?link" to a.portfolio
+        out += "notice" to a.noticePeriod
+        out += "expected.{0,15}(ctc|salary|compensation|pay)|salary.?expectation|desired.{0,10}(salary|compensation)" to a.expectedCtc
+        out += "current.{0,15}(ctc|salary|compensation)" to a.currentCtc
+        out += "(current|present|most recent).{0,10}(company|employer|organi[sz]ation)" to a.currentCompany
+        out += "(current|present|most recent).{0,10}(title|role|designation|position)" to a.currentTitle
+        out += "(years|yrs).{0,25}experience|experience.{0,15}(years|yrs)|total experience" to p.yearsExperience
+        out += "start date|earliest start|available to start|when can you (start|join)|joining date" to a.startDate
+        out += "how did you (hear|find|learn|come)|where did you (hear|find)" to a.howHeard
+        out += "sponsor" to a.needsSponsorship
+        out += "relocat" to a.willingToRelocate
+        out += "(authori[sz]ed|authori[sz]ation|eligible|legally).{0,40}work|work.{0,15}(permit|authori[sz]ation)" to a.workAuthorization
+        out += "gender" to a.gender
+        out += "(current )?(location|city)|where are you (based|located)|based in|current address" to a.city
+        out += "college|university|school" to p.college
+        return out.filter { it.second.isNotBlank() }
+    }
+
+    /** Yes/No radio groups: question pattern -> "Yes" or "No". */
+    fun yesNo(p: Profile): List<Pair<String, String>> {
+        val a = p.answers
+        return listOfNotNull(
+            yesNo(a.needsSponsorship)?.let { "sponsor" to it },
+            yesNo(a.willingToRelocate)?.let { "relocat" to it },
+            yesNo(a.workAuthorization)?.let { "(authori[sz]ed|eligible|legally).{0,40}work" to it },
+        ) + p.answers.custom.mapNotNull { qa -> yesNo(qa.a)?.let { esc(qa.q) to it } }
     }
 }

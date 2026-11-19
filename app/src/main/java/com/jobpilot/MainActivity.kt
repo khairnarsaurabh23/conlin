@@ -33,6 +33,18 @@ class MainActivity : ComponentActivity() {
 
     private val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
+    /** File picker for web forms ("Choose another file" when attaching a resume). */
+    private var fileResult: ((android.net.Uri?) -> Unit)? = null
+    private val pickDoc = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        fileResult?.invoke(uri); fileResult = null
+    }
+
+    private fun pickFile(cb: (android.net.Uri?) -> Unit) {
+        fileResult?.invoke(null)
+        fileResult = cb
+        pickDoc.launch(arrayOf("*/*"))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -46,7 +58,7 @@ class MainActivity : ComponentActivity() {
                 enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
             }
             JobPilotTheme(mode) {
-                AppRoot(vm, webView)
+                AppRoot(vm, webView, ::pickFile)
             }
         }
         if (Build.VERSION.SDK_INT >= 33 &&

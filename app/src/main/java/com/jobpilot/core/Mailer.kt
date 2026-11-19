@@ -118,7 +118,8 @@ object Mailer {
         }
         Store.recordAction(ActionKind.EMAIL, lead.id)
         if (lead.jobKey.isNotBlank()) Store.updateJob(lead.jobKey) { j ->
-            if (j.status == JobStatus.NEW || j.status == JobStatus.SAVED) j.copy(status = JobStatus.APPLIED) else j
+            if (j.status == JobStatus.NEW || j.status == JobStatus.SAVED || j.status == JobStatus.REFERRAL_ASKED)
+                j.copy(status = JobStatus.APPLIED, appliedAt = System.currentTimeMillis(), applyOpenedAt = 0) else j
         }
     }
 

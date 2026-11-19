@@ -123,6 +123,21 @@ object JobRunner {
         val emailsAdded = queueEmails(Store.data.jobs.filter { it.key in keysNew })
         housekeeping()
 
+        // Optional: email applications that need no review go out straight away.
+        if (profile.autoSendEmails && profile.smtpConfigured) {
+            val jobs = Store.data.jobs.associateBy { it.key }
+            val auto = Store.data.emails.filter { e ->
+                val j = jobs[e.jobKey]
+                e.status == EmailStatus.DRAFT && j != null && Emails.isRecruitingAddress(e.to) &&
+                    j.matchScore >= profile.autoSendMin && Readiness.of(j, profile).level == Readiness.Level.READY
+            }.map { it.id }.toSet()
+            if (auto.isNotEmpty()) {
+                Store.update { d -> d.copy(emails = d.emails.map { if (it.id in auto) it.copy(status = EmailStatus.APPROVED) else it }) }
+                onProgress("Sending ${auto.size} email application(s)")
+                Mailer.sendApproved(onProgress).let { if (!it.startsWith("Sent")) errors += it }
+            }
+        }
+
         val log = RunLog(
             at = System.currentTimeMillis(),
             searches = searches.size,

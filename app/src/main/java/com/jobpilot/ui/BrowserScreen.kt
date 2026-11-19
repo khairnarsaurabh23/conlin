@@ -2,12 +2,16 @@ package com.jobpilot.ui
 
 import android.graphics.Bitmap
 import android.view.ViewGroup
+import android.net.Uri
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -37,6 +41,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.FileProvider
+import com.jobpilot.core.FormRules
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.addJsonArray
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.putJsonArray
 import com.jobpilot.MainActivity
 import com.jobpilot.core.Emails
 import com.jobpilot.core.JobRunner
@@ -122,6 +134,96 @@ private const val WATCH_JS = """
 })()
 """
 
+/** Shared by the form scripts: a field's label text, and setting a value so React-style forms notice. */
+private const val JS_HELPERS = """
+function jpLab(el){
+  var t='';
+  try{ if(el.id){ var l=document.querySelector('label[for="'+CSS.escape(el.id)+'"]'); if(l) t+=l.innerText+' '; } }catch(e){}
+  var p=el.closest('label'); if(p) t+=p.innerText+' ';
+  var by=el.getAttribute('aria-labelledby'); if(by){ by.split(' ').forEach(function(id){ var x=document.getElementById(id); if(x) t+=x.innerText+' '; }); }
+  t+=(el.getAttribute('aria-label')||'')+' '+(el.placeholder||'');
+  if(t.trim().length<3){ var c=el.parentElement; for(var i=0;i<4&&c;i++){ var x=(c.innerText||'').trim(); if(x.length>0&&x.length<300){ t+=' '+x; break; } c=c.parentElement; } }
+  if(t.trim().length<3) t+=' '+(el.name||'')+' '+(el.id||'');
+  return t.replace(/\s+/g,' ').trim();
+}
+function jpSet(el,v){
+  var proto = el.tagName=='TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  var d=Object.getOwnPropertyDescriptor(proto,'value'); d.set.call(el,v);
+  el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); el.dispatchEvent(new Event('blur',{bubbles:true}));
+}
+"""
+
+/** Fills text fields, dropdowns and Yes/No radio groups from the saved answers. Never submits. */
+private const val FILL_JS = """
+(function(A){
+ var filled=0, missing=[];
+ var els=document.querySelectorAll('input,textarea,select');
+ for(var i=0;i<els.length;i++){
+   var el=els[i]; var type=(el.type||'').toLowerCase();
+   if(el.disabled||el.readOnly) continue;
+   if(['hidden','submit','button','file','checkbox','radio','password','search','image','reset'].indexOf(type)>=0) continue;
+   if(el.tagName!='SELECT' && el.value && el.value.trim()) continue;
+   if(el.offsetParent===null) continue;
+   var L=jpLab(el).toLowerCase(); var v=null;
+   for(var r=0;r<A.rules.length;r++){ try{ if(new RegExp(A.rules[r][0],'i').test(L)){ v=A.rules[r][1]; break; } }catch(e){} }
+   if(v===null){ if(el.required||/\*/.test(L)) missing.push(L.slice(0,60)); continue; }
+   if(el.tagName=='SELECT'){
+     if(el.selectedIndex>0) continue;
+     var o=el.options, pick=-1, vl=v.toLowerCase();
+     for(var k=0;k<o.length;k++){ var ot=(o[k].text||'').toLowerCase().trim(); if(ot && (ot==vl || ot.indexOf(vl)==0 || (vl.indexOf(ot)==0 && ot.length>1))){ pick=k; break; } }
+     if(pick<0){ missing.push(L.slice(0,60)); continue; }
+     el.selectedIndex=pick; el.dispatchEvent(new Event('change',{bubbles:true})); filled++;
+   } else { jpSet(el,v); filled++; }
+ }
+ var groups={}, rs=document.querySelectorAll('input[type=radio]');
+ for(var i=0;i<rs.length;i++){ var n=rs[i].name; if(n){ (groups[n]=groups[n]||[]).push(rs[i]); } }
+ for(var n in groups){
+   var g=groups[n]; if(g.some(function(x){return x.checked;})) continue;
+   var fs=g[0].closest('fieldset')||(g[0].parentElement&&g[0].parentElement.parentElement&&g[0].parentElement.parentElement.parentElement);
+   var Q=((fs&&fs.innerText)||'').toLowerCase().slice(0,500); var v=null;
+   for(var r=0;r<A.yesno.length;r++){ try{ if(new RegExp(A.yesno[r][0],'i').test(Q)){ v=A.yesno[r][1].toLowerCase(); break; } }catch(e){} }
+   if(!v) continue;
+   for(var k=0;k<g.length;k++){ var t=(jpLab(g[k])+' '+(g[k].value||'')).toLowerCase(); if(new RegExp('(^|[^a-z])'+v+'([^a-z]|$)').test(t)){ g[k].click(); filled++; break; } }
+ }
+ var files=document.querySelectorAll('input[type=file]').length;
+ return JSON.stringify({filled:filled, missing:missing.slice(0,6), files:files});
+})
+"""
+
+/** Collects empty open questions (textareas, or text fields phrased as a question) for the AI. */
+private const val QUESTIONS_JS = """
+(function(){
+ var out=[]; window.__jpQ=[];
+ var els=document.querySelectorAll('input,textarea');
+ for(var i=0;i<els.length;i++){
+   var el=els[i]; var type=(el.type||'').toLowerCase();
+   if(el.disabled||el.readOnly) continue;
+   if(el.tagName=='INPUT' && type!='text' && type!='') continue;
+   if(el.value && el.value.trim()) continue;
+   if(el.offsetParent===null) continue;
+   var L=jpLab(el);
+   if(el.tagName!='TEXTAREA' && L.indexOf('?')<0 && L.length<40) continue;
+   window.__jpQ.push(el); out.push(L.slice(0,300));
+ }
+ return JSON.stringify(out.slice(0,12));
+})()
+"""
+
+private const val ANSWER_JS = """
+(function(A){ var q=window.__jpQ||[], n=0; for(var i=0;i<A.length&&i<q.length;i++){ if(A[i] && !q[i].value){ jpSet(q[i],A[i]); n++; } } return ''+n; })
+"""
+
+/** True on a typical "thanks for applying" page. */
+private const val APPLIED_JS = """
+(function(){ var t=(document.body&&document.body.innerText||'').slice(0,20000).toLowerCase();
+ return /thank(s| you)[^.]{0,40}(for applying|for your application)|application (has been |was )?(received|submitted|sent)|we('ve| have) received your application|successfully (applied|submitted)|your application is (in|complete)/.test(t)?'1':''; })()
+"""
+
+private fun fillArgs(p: com.jobpilot.data.Profile): String = buildJsonObject {
+    putJsonArray("rules") { FormRules.text(p).forEach { (r, v) -> addJsonArray { add(r); add(v) } } }
+    putJsonArray("yesno") { FormRules.yesNo(p).forEach { (r, v) -> addJsonArray { add(r); add(v) } } }
+}.toString()
+
 private val json = Json { ignoreUnknownKeys = true }
 
 /** evaluateJavascript returns the JS value JSON-encoded; our scripts return a string. */
@@ -129,7 +231,13 @@ private fun decodeJsResult(raw: String?): String? =
     runCatching { json.parseToJsonElement(raw ?: return null).jsonPrimitive.content }.getOrNull()
 
 @Composable
-fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
+fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView, pickFile: ((Uri?) -> Unit) -> Unit) {
+    val ctx = LocalContext.current
+    val queue by vm.applyQueue.collectAsState()
+    val qIndex by vm.applyIndex.collectAsState()
+    val applying = queue.getOrNull(qIndex)?.let { k -> data.jobs.firstOrNull { it.key == k } }
+    var pageLoads by remember { mutableStateOf(0) }
+    var fileCb by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
     val pendingUrl by vm.browserUrl.collectAsState()
     val targetKey by vm.browserJob.collectAsState()
     val tag by vm.browserTag.collectAsState()
@@ -156,6 +264,15 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) { loading = true }
             override fun onPageFinished(view: WebView, url: String?) {
                 loading = false; title = view.title ?: url.orEmpty(); canBack = view.canGoBack(); pageUrl = url.orEmpty()
+                pageLoads++
+            }
+        }
+        // Resume upload on web forms: offer the resume (tailored for this job if there is one).
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(view: WebView, cb: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
+                fileCb?.onReceiveValue(null)
+                fileCb = cb
+                return true
             }
         }
         if (webView.url == null && pendingUrl == null) webView.loadUrl("https://www.linkedin.com/login")
@@ -171,7 +288,50 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
                 val kind = decodeJsResult(raw).orEmpty()
                 if (kind.isNotEmpty()) vm.onRestrictionSignal(kind)
             }
+            // While applying, notice the "thanks for applying" page.
+            val key = vm.applyKey ?: vm.browserJob.value?.takeIf { k -> Store.data.jobs.any { it.key == k && it.applyOpenedAt > 0 } }
+            if (key != null && Store.data.jobs.any { it.key == key && it.appliedAt == 0L }) {
+                webView.evaluateJavascript(APPLIED_JS) { raw -> if (decodeJsResult(raw) == "1") vm.markApplied(key, auto = true) }
+            }
         }
+    }
+
+    fun runFill(quiet: Boolean) {
+        webView.evaluateJavascript(JS_HELPERS + FILL_JS + "(" + fillArgs(Store.data.profile) + ")") { raw ->
+            val o = decodeJsResult(raw)?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() } ?: return@evaluateJavascript
+            val filled = o["filled"]?.jsonPrimitive?.intOrNull ?: 0
+            val missing = (o["missing"] as? JsonArray).orEmpty().mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+            val files = o["files"]?.jsonPrimitive?.intOrNull ?: 0
+            if (quiet && filled == 0) return@evaluateJavascript
+            vm.toast(buildString {
+                append(if (filled == 0) "Nothing to fill on this page" else "Filled $filled field(s)")
+                if (missing.isNotEmpty()) append(". Still needed: " + missing.take(3).joinToString(", ") { it.take(30) })
+                if (files > 0) append(". Tap the resume upload to attach yours")
+                append(". Check it, then tap Submit.")
+            })
+        }
+    }
+
+    fun runAiAnswers() {
+        webView.evaluateJavascript(JS_HELPERS + QUESTIONS_JS) { raw ->
+            val qs = decodeJsResult(raw)?.let { runCatching { json.parseToJsonElement(it) as JsonArray }.getOrNull() }.orEmpty()
+                .mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+            if (qs.isEmpty()) { vm.toast("No open questions left on this page"); return@evaluateJavascript }
+            vm.aiFormAnswers(qs) { answers ->
+                if (answers == null) return@aiFormAnswers
+                val arg = buildJsonArray { answers.forEach { add(it) } }.toString()
+                webView.evaluateJavascript(JS_HELPERS + ANSWER_JS + "(" + arg + ")") { r ->
+                    val n = decodeJsResult(r)?.toIntOrNull() ?: 0
+                    val skipped = answers.count { it.isBlank() }
+                    vm.toast("Drafted $n answer(s)" + (if (skipped > 0) ", left $skipped for you" else "") + ". Read them before submitting.")
+                }
+            }
+        }
+    }
+
+    // While applying, fill each page as it loads.
+    LaunchedEffect(pageLoads, applying?.key) {
+        if (applying != null && pageLoads > 0) { delay(1800); runFill(quiet = true) }
     }
     BackHandler(enabled = canBack) { webView.goBack() }
 
@@ -233,7 +393,19 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
                 Quiet("Recruiters", { go(base + enc(target.company + " recruiter"), "recruiter") })
             }
         }
-        if (target != null) {
+        if (applying != null) {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                Label("Applying ${qIndex + 1} of ${queue.size}" + if (applying.tailoredResume.isNotBlank()) " · tailored resume ready" else "")
+                Text("${JobRunner.roleOf(applying)} at ${applying.company}", style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Btn("Fill form", { runFill(quiet = false) }, primary = true)
+                    if (data.profile.aiConfigured) Btn("AI answers", { runAiAnswers() })
+                    Btn(if (qIndex + 1 < queue.size) "Applied, next" else "Applied, done", { vm.applyNext(markApplied = true) })
+                    Quiet("Skip", { vm.applyNext(markApplied = false) })
+                    Quiet("Stop", { vm.stopApply() })
+                }
+            }
+        } else if (target != null) {
             Row(Modifier.padding(start = 20.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Muted("Saving to ${JobRunner.roleOf(target)} at ${target.company}", Modifier.weight(1f), maxLines = 1)
                 Quiet("Clear", { vm.setBrowserJob(null); vm.setBrowserTag("") })
@@ -338,6 +510,32 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
                     }
                 }
             }
+        }
+    }
+
+    fileCb?.let { cb ->
+        val key = applying?.key ?: targetKey
+        val resume = remember(key) { Store.resumeFor(key.orEmpty()) }
+        fun answer(v: Array<Uri>?) { cb.onReceiveValue(v); fileCb = null }
+        Dialog(
+            title = "Attach a file", onDismiss = { answer(null) },
+            confirm = if (resume != null) "Attach my resume" else "Choose a file",
+            onConfirm = {
+                if (resume != null) answer(arrayOf(FileProvider.getUriForFile(ctx, ctx.packageName + ".files", resume)))
+                else { fileCb = null; pickFile { uri -> cb.onReceiveValue(uri?.let { arrayOf(it) }) } }
+            },
+            dismiss = if (resume != null) "Choose another file" else "Cancel",
+            onDismissButton = {
+                if (resume != null) { fileCb = null; pickFile { uri -> cb.onReceiveValue(uri?.let { arrayOf(it) }) } } else answer(null)
+            },
+        ) {
+            Muted(
+                when {
+                    resume == null -> "No resume is attached in the app yet."
+                    resume.name.startsWith("resume_") -> "Attach the resume tailored for this job."
+                    else -> "Attach your resume (${resume.extension.uppercase()})."
+                }
+            )
         }
     }
 

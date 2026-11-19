@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jobpilot.core.Guard
 import com.jobpilot.core.JobRunner
+import com.jobpilot.core.ApplyVia
+import com.jobpilot.core.Readiness
 import com.jobpilot.core.Why
 import com.jobpilot.data.ContactKind
 import com.jobpilot.data.AppData
@@ -62,11 +64,14 @@ private sealed class Card(val key: String) {
     class FindPeople(val job: Job) : Card("people-${job.key}")
     class NewJob(val job: Job) : Card("job-${job.key}")
     class More(val text: String, val id: String) : Card("more-$id")
+    class ApplyHead(val ready: List<Job>, val tailor: Int, val manual: Int) : Card("apply-head")
+    class Apply(val job: Job, val r: Readiness.Result, val via: ApplyVia) : Card("apply-${job.key}")
 }
 
 /** The inbox is split by kind of decision, so each list is one sort of thing. */
 enum class InboxTab(val label: String, val empty: String) {
     SEND("send", "Nothing approved is waiting to be sent."),
+    APPLY("apply", "No kept jobs waiting for an application. Keep jobs from the Jobs list and they show up here, with a check of whether your resume is ready."),
     JOBS("jobs", "No new jobs to review. Tap Check now, or wait for the next automatic check."),
     REFERRALS("referrals", "No referral suggestions. Keep a job, then use Find people on it. People tied to a job or a hiring post show up here."),
     NETWORK("network", "Nobody here. People with no hiring signal or linked job land in this list."),
@@ -128,8 +133,20 @@ private fun buildCards(d: AppData, now: Long): Map<InboxTab, List<Card>> {
 
     val emails = d.emails.filter { it.status == EmailStatus.DRAFT }.sortedByDescending { it.createdAt }.map { Card.Email(it) }
 
+    // apply: kept jobs not applied to yet, with how to apply and whether the resume is ready
+    val toApply = d.jobs.filter { (it.status == JobStatus.SAVED || it.status == JobStatus.REFERRAL_ASKED) && it.appliedAt == 0L }
+        .map { Card.Apply(it, Readiness.of(it, p), Readiness.via(it)) }
+        .sortedWith(compareBy<Card.Apply> { it.r.level.ordinal }.thenByDescending { it.job.matchScore })
+    val apply = if (toApply.isEmpty()) emptyList() else listOf<Card>(
+        Card.ApplyHead(
+            toApply.filter { it.r.level == Readiness.Level.READY && it.via == ApplyVia.FORM }.map { it.job },
+            toApply.count { it.r.level == Readiness.Level.TAILOR },
+            toApply.count { it.via == ApplyVia.LINKEDIN },
+        )
+    ) + toApply
+
     return mapOf(
-        InboxTab.SEND to send, InboxTab.JOBS to jobCards, InboxTab.REFERRALS to referrals,
+        InboxTab.SEND to send, InboxTab.APPLY to apply, InboxTab.JOBS to jobCards, InboxTab.REFERRALS to referrals,
         InboxTab.NETWORK to network, InboxTab.EMAILS to emails,
     )
 }
@@ -141,7 +158,7 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
     LaunchedEffect(Unit) { while (true) { delay(30_000); now = System.currentTimeMillis() } }
 
     val all = remember(data, now) { buildCards(data, now) }
-    fun count(t: InboxTab) = all.getValue(t).count { it !is Card.More }
+    fun count(t: InboxTab) = all.getValue(t).count { it !is Card.More && it !is Card.ApplyHead }
     // Until a tab is picked, show the first one that has something in it.
     var chosen by rememberSaveable { mutableStateOf<InboxTab?>(null) }
     val tab = chosen ?: InboxTab.entries.firstOrNull { count(it) > 0 } ?: InboxTab.JOBS
@@ -251,6 +268,23 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                         }
                         is Card.NewJob -> JobCard(card.job, data.profile.homeCountry, onOpen = { vm.openJob(card.job.key) },
                             onKeep = { vm.keepJob(card.job.key) }, onSkip = { vm.skipJob(card.job.key) })
+                        is Card.ApplyHead -> Panel {
+                            Label("Applications")
+                            Text(
+                                buildString {
+                                    append("${card.ready.size} ready to apply on a company form")
+                                    if (card.tailor > 0) append(", ${card.tailor} to tailor first")
+                                },
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Muted("Each form opens in Browse, filled from your answers, with your resume attached when you tap upload. You check it and tap Submit.")
+                            if (data.profile.answers.isEmpty) Muted("Add your answers first so forms can be filled.", Modifier.padding(top = 4.dp), color = warn)
+                            ButtonRow {
+                                Btn("Apply to ready ones", { vm.startApply(card.ready.map { it.key }) }, primary = true, enabled = card.ready.isNotEmpty())
+                                Quiet("Edit my answers", { vm.showAnswers(true) })
+                            }
+                        }
+                        is Card.Apply -> ApplyCard(vm, data, card.job, card.r, card.via, onEmail = { editEmail = it })
                         is Card.More -> Row(verticalAlignment = Alignment.CenterVertically) {
                             Muted(card.text, Modifier.weight(1f))
                             if (card.id == "jobs") Quiet("Skip those", { vm.skipWeakJobs(data.profile.minMatch) })
@@ -448,6 +482,54 @@ private fun JobCard(job: Job, home: String, onOpen: () -> Unit, onKeep: () -> Un
             Btn("Keep", onKeep, primary = true)
             Quiet("Skip", onSkip)
             Quiet("Details", onOpen)
+        }
+    }
+}
+
+@Composable
+private fun ApplyCard(vm: AppViewModel, data: AppData, job: Job, r: Readiness.Result, via: ApplyVia, onEmail: (EmailLead) -> Unit) {
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label(
+                (if (via == ApplyVia.FORM) Readiness.formName(job) else via.label) + " · " + job.source,
+                Modifier.weight(1f),
+            )
+            ScoreText(job.matchScore)
+        }
+        Text(job.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+        Muted(listOf(job.company, job.location).filter { it.isNotBlank() }.joinToString(", "), maxLines = 1)
+        Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Tag(
+                r.level.label,
+                when (r.level) { Readiness.Level.READY -> ok; Readiness.Level.TAILOR -> warn; else -> MaterialTheme.colorScheme.onSurfaceVariant },
+            )
+        }
+        Muted(r.note, Modifier.padding(top = 4.dp))
+        if (r.unshown.isNotEmpty()) Mark("-", "You have, but your resume doesn't show: " + r.unshown.take(5).joinToString(", "), warn, maxLines = 2)
+        if (r.gaps.isNotEmpty()) Mark("-", "Posting also asks for: " + r.gaps.take(5).joinToString(", "), MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+
+        if (job.applyOpenedAt > 0) {
+            Text("Did you apply?", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 10.dp))
+            ButtonRow {
+                Btn("Yes, applied", { vm.markApplied(job.key) }, primary = true)
+                Btn("Not yet", { vm.clearApplyOpened(job.key) })
+            }
+            return@Panel
+        }
+        ButtonRow {
+            val tailorFirst = r.level == Readiness.Level.TAILOR && job.tailoredResume.isBlank() && job.description.isNotBlank()
+            if (tailorFirst) Btn("Tailor resume", { vm.openJob(job.key) }, primary = true)
+            val applyLabel = when (via) { ApplyVia.EMAIL -> "Review email"; ApplyVia.LINKEDIN -> "Open in LinkedIn"; ApplyVia.FORM -> "Apply" }
+            val doApply: () -> Unit = {
+                when (via) {
+                    ApplyVia.EMAIL -> vm.emailFor(job) { it?.let(onEmail) ?: vm.toast("No usable email in this posting") }
+                    ApplyVia.LINKEDIN -> vm.applyOnLinkedIn(job)
+                    ApplyVia.FORM -> vm.startApply(listOf(job.key))
+                }
+            }
+            if (tailorFirst) Quiet(if (via == ApplyVia.FORM) "Apply anyway" else applyLabel, doApply) else Btn(applyLabel, doApply, primary = true)
+            Quiet("Mark applied", { vm.markApplied(job.key) })
+            Quiet("Not for me", { vm.skipJob(job.key) })
         }
     }
 }

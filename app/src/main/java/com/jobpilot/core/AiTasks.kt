@@ -158,6 +158,29 @@ object AiTasks {
         return note to o.ask.trim()
     }
 
+    /** Answers for open questions on an application form, in the same order. Empty where it can't know. */
+    suspend fun formAnswers(d: AppData, job: Job?, questions: List<String>): List<String> {
+        val p = d.profile
+        val prompt = buildString {
+            appendLine("Answer these questions from a job application form, as this person, in the first person.")
+            appendLine("Use only facts from the resume and saved answers below. If a question needs a fact that isn't there (a salary, a date, a personal detail), answer with an empty string.")
+            appendLine("Keep answers under 120 words, or under 220 for a cover letter. Plain text, no greeting or sign-off except in a cover letter.")
+            appendLine("""Answer with one JSON object, no code fence: {"answers":["", ...]} with exactly ${questions.size} strings in the same order.""")
+            appendLine()
+            questions.forEachIndexed { i, q -> appendLine("${i + 1}. $q") }
+            appendLine()
+            appendLine("JOB POSTING"); appendLine(posting(job))
+            appendLine("PERSON"); append(background(p))
+            val saved = p.answers.summary()
+            if (saved.isNotBlank()) { appendLine("SAVED ANSWERS"); appendLine(saved) }
+        }
+        val out = Ai.complete(p, RULES, prompt, maxTokens = 2500)
+        val arr = try {
+            (json.parseToJsonElement(jsonPart(out)) as kotlinx.serialization.json.JsonObject)["answers"] as kotlinx.serialization.json.JsonArray
+        } catch (e: Exception) { throw IOException("The AI did not answer in the expected format. Try again.") }
+        return questions.indices.map { i -> (arr.getOrNull(i) as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty().trim() }
+    }
+
     suspend fun test(p: Profile): String {
         Ai.complete(p, "Reply with the single word: ready", "Say ready.", maxTokens = 20)
         return "AI connection works."

@@ -19,6 +19,13 @@ Approved items move to **Ready to send**. For LinkedIn, the app copies the text 
 
 Approved emails are sent from the app through Gmail (with an App Password), or opened one at a time in the Gmail app.
 
+## Applying
+
+- **Apply list** (Inbox > Apply): every kept job you haven't applied to, with how to apply (company form, email or LinkedIn) and whether your resume is ready: *Ready to apply*, *Tailor first* (it shows the skills you have that your resume doesn't show), or *Weak fit*.
+- **Company forms**: *Apply to ready ones* opens each form in Browse, one after another. JobPilot fills it from your **Application answers** (Settings), attaches your resume (the tailored one if there is one) when you tap the upload button, and with an AI key drafts answers to open questions. You check it and tap Submit; a "thanks for applying" page marks the job applied. JobPilot never presses Submit itself.
+- **Email applications** can be sent automatically above a match score you choose, but only when the resume is ready (off by default).
+- **LinkedIn jobs** open in the LinkedIn app; Easy Apply stays manual.
+
 ## Account safety
 
 - Connection requests are capped per rolling 24 hours and per rolling 7 days (defaults 15 and 60).

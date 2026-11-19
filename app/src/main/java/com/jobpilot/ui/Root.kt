@@ -42,7 +42,8 @@ import com.jobpilot.data.Stage
 import kotlinx.coroutines.launch
 
 @Composable
-fun AppRoot(vm: AppViewModel, webView: WebView) {
+fun AppRoot(vm: AppViewModel, webView: WebView, pickFile: ((android.net.Uri?) -> Unit) -> Unit) {
+    val showAnswers by vm.showAnswers.collectAsState()
     val data by vm.data.collectAsState()
     val tab by vm.tab.collectAsState()
     val openJob by vm.openJob.collectAsState()
@@ -70,6 +71,10 @@ fun AppRoot(vm: AppViewModel, webView: WebView) {
             BackHandler { vm.closeReport() }
             ReportScreen(vm, reportFile, snack); return
         }
+        showAnswers -> {
+            BackHandler { vm.showAnswers(false) }
+            AnswersScreen(vm, data, snack); return
+        }
         showSettings -> {
             BackHandler { vm.showSettings(false) }
             SettingsScreen(vm, data, snack); return
@@ -88,7 +93,7 @@ fun AppRoot(vm: AppViewModel, webView: WebView) {
             when (t) {
                 Tab.INBOX -> InboxScreen(vm, data, busy != null)
                 Tab.TRACKER -> TrackerScreen(vm, data)
-                Tab.LINKEDIN -> BrowserScreen(vm, data, webView)
+                Tab.LINKEDIN -> BrowserScreen(vm, data, webView, pickFile)
                 Tab.INSIGHTS -> InsightsScreen(vm, data)
             }
         }
