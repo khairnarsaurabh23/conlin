@@ -64,7 +64,11 @@ data class Profile(
     val minGapMinutes: Int = 3,
     val rampUp: Boolean = true,
     /** true = profiles open in the LinkedIn app, false = in the built-in browser. */
-    val openInLinkedInApp: Boolean = true,
+    val openInLinkedInApp: Boolean = false,
+    /** Messages you can send to people you aren't connected to, per month (InMail or free ones). */
+    val directPerMonth: Int = 3,
+    /** Premium: InMail credits come back when the person replies within 90 days. */
+    val premium: Boolean = false,
 
     // Background checks
     val autoCheckEnabled: Boolean = true,
@@ -331,6 +335,8 @@ data class Contact(
     val postUrl: String = "",
     /** The user changed the note or message by hand; app upgrades must leave it alone. */
     val edited: Boolean = false,
+    /** Messaged without connecting first (InMail or Open Profile). */
+    val direct: Boolean = false,
 )
 
 @Serializable
@@ -370,7 +376,7 @@ data class EmailLead(
 )
 
 @Serializable
-enum class ActionKind { INVITE, MESSAGE, EMAIL }
+enum class ActionKind { INVITE, MESSAGE, EMAIL, DIRECT }
 
 /** One outreach action that counts against a budget. */
 @Serializable

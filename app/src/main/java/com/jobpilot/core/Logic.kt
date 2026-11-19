@@ -90,9 +90,24 @@ object Guard {
         return gap(d, now) ?: Check(true)
     }
 
+    /** Direct messages to non-connections left in the rolling month. On Premium, answered ones come back. */
+    fun directLeft(d: AppData, now: Long): Int {
+        val byId = d.contacts.associateBy { it.id }
+        val used = d.actions.filter { it.kind == ActionKind.DIRECT && now - it.at < 30 * DAY }.count { a ->
+            val c = byId[a.ref]
+            !(d.profile.premium && c != null && c.repliedAt > 0 && c.repliedAt - a.at < 90 * DAY)
+        }
+        return (d.profile.directPerMonth - used).coerceAtLeast(0)
+    }
+
+    fun canDirect(d: AppData, now: Long): Check {
+        if (directLeft(d, now) <= 0) return Check(false, "No direct messages left this month")
+        return canMessage(d, now)
+    }
+
     fun canMessage(d: AppData, now: Long): Check {
         if (!d.safety.invitesOnly) pauseText(d, now)?.let { return Check(false, it) }
-        val today = count(d, ActionKind.MESSAGE, DAY, now)
+        val today = count(d, ActionKind.MESSAGE, DAY, now) + count(d, ActionKind.DIRECT, DAY, now)
         if (today >= d.profile.dailyMessageCap) return Check(false, "Daily message limit reached ($today of ${d.profile.dailyMessageCap})")
         return gap(d, now) ?: Check(true)
     }

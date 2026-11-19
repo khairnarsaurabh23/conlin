@@ -8,14 +8,14 @@ Everything the app wants to do arrives in the **Inbox** as a card:
 
 | Card | What you decide |
 |---|---|
-| New job | Keep or skip. Each card lists why it was suggested and what counts against it. Kept jobs move to the Tracker. |
+| New job | Keep, skip, or **People to ask**: opens the company's people search and lists who works there, best first, each with the drafted message. Each card lists why it was suggested and what counts against it. Kept jobs move to the Tracker. |
 | Find people | Opens a people search for a kept job in the LinkedIn tab. |
 | Connection request | Approve, edit the note, or skip. Each card shows the evidence: their hiring post, the posting they are named on, or the openings at their company. The drafted note opens with that same reason. People who posted about hiring rank first, then existing connections, your college and past companies. |
 | Referral ask | Appears once someone has accepted. Approve, edit, or skip. |
 | Follow-up | One short follow-up if there is no reply after a few days. |
 | Recruiter email | Addresses found in job posts and hiring posts. Approve, edit, or skip. |
 
-Approved items move to **Ready to send**. For LinkedIn, the app copies the text and opens the profile; you tap Connect or Message and paste. Then you confirm whether it went through, and only then is it counted. The app never clicks or sends on LinkedIn by itself: automated sending is what LinkedIn detects and restricts.
+Approved items move to **Ready to send**. For LinkedIn, the app copies the text and opens the profile in the Browse tab; you tap Connect or Message and paste. JobPilot reads the page you're on and logs the send when the request shows Pending or your message appears in the thread, so there's nothing to confirm. (If you choose to open profiles in the LinkedIn app instead, it asks.) The app never clicks or sends on LinkedIn by itself: automated sending is what LinkedIn detects and restricts.
 
 Approved emails are sent from the app through Gmail (with an App Password), or opened one at a time in the Gmail app.
 
@@ -27,6 +27,8 @@ Approved emails are sent from the app through Gmail (with an App Password), or o
 - **LinkedIn jobs** open in the LinkedIn app; Easy Apply stays manual.
 
 ## Account safety
+
+- **Direct messages** to people you aren't connected to (InMail, or free to Open Profile members) are offered for top suggestions, within a monthly allowance you set. With Premium, answered ones are given back, as LinkedIn returns the credit.
 
 - Connection requests are capped per rolling 24 hours and per rolling 7 days (defaults 15 and 60).
 - New use starts at a third of the caps and reaches the full amount in week three.

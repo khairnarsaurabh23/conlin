@@ -224,6 +224,30 @@ private fun fillArgs(p: com.jobpilot.data.Profile): String = buildJsonObject {
     putJsonArray("yesno") { FormRules.yesNo(p).forEach { (r, v) -> addJsonArray { add(r); add(v) } } }
 }.toString()
 
+/**
+ * Reads the page you are on to log sends without asking: a profile showing "Pending", your
+ * message in a thread (not just typed in the box), or a 1st-degree badge.
+ */
+private const val STATE_JS = """
+(function(A){
+ var body=(document.body&&document.body.innerText)||'';
+ function norm(x){ return (x||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+ var top=body.slice(0,6000);
+ var all=norm(body), comp='';
+ document.querySelectorAll('[contenteditable=true],textarea').forEach(function(e){ comp+=' '+(e.innerText||e.value||''); });
+ comp=norm(comp);
+ function count(h,n){ var c=0,i=0; while((i=h.indexOf(n,i))>=0){ c++; i+=n.length; } return c; }
+ var sent=[];
+ (A.snips||[]).forEach(function(x){ var n=norm(x[1]); if(n.length>15 && count(all,n)>count(comp,n)) sent.push(x[0]); });
+ return JSON.stringify({ pending:/(^|\n)\s*pending\s*(\n|$)|pending, click to withdraw/i.test(top),
+   first:/(·|•)\s*1st\b|1st degree connection/i.test(top), sent:sent });
+})
+"""
+
+/** Profile links on the page (used on your Connections page to spot accepted invites). */
+private const val LINKS_JS =
+    "(function(){var o=[];document.querySelectorAll('a[href*=\"/in/\"]').forEach(function(a){o.push((a.href||'').split('?')[0]);});return JSON.stringify(o);})()"
+
 private val json = Json { ignoreUnknownKeys = true }
 
 /** evaluateJavascript returns the JS value JSON-encoded; our scripts return a string. */
@@ -288,6 +312,36 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView, pickFile: (
                 val kind = decodeJsResult(raw).orEmpty()
                 if (kind.isNotEmpty()) vm.onRestrictionSignal(kind)
             }
+            // Log sends from what the page shows, so there is nothing to confirm by hand.
+            val d = Store.data
+            val url = webView.url.orEmpty()
+            val onProfile = if (url.contains("/in/")) d.contacts.firstOrNull { Store.sameProfile(url, it.profileUrl) } else null
+            val waiting = d.contacts.filter { it.openedAt > 0 && it.stage == Stage.ASK_APPROVED && it.ask.length > 20 }
+            if (onProfile != null || waiting.isNotEmpty()) {
+                val arg = buildJsonObject {
+                    putJsonArray("snips") {
+                        waiting.forEach { c ->
+                            addJsonArray { add(c.id); add(c.ask.replace(Regex("\\s+"), " ").trim().let { t -> t.substring(minOf(t.length, t.indexOf(',').coerceAtLeast(0) + 1)).take(70) }) }
+                        }
+                    }
+                }.toString()
+                webView.evaluateJavascript(STATE_JS + "(" + arg + ")") { raw ->
+                    val o = decodeJsResult(raw)?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() } ?: return@evaluateJavascript
+                    (o["sent"] as? JsonArray).orEmpty().mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }.forEach { vm.detected(it, "sent") }
+                    if (onProfile != null) {
+                        if (o["pending"]?.jsonPrimitive?.content == "true") vm.detected(onProfile.id, "pending")
+                        else if (o["first"]?.jsonPrimitive?.content == "true") vm.detected(onProfile.id, "connected")
+                    }
+                }
+            }
+            if (url.contains("/connections")) {
+                val invited = d.contacts.filter { it.stage == Stage.INVITED }
+                if (invited.isNotEmpty()) webView.evaluateJavascript(LINKS_JS) { raw ->
+                    val links = decodeJsResult(raw)?.let { runCatching { json.parseToJsonElement(it) as JsonArray }.getOrNull() }.orEmpty()
+                        .mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                    invited.filter { c -> links.any { Store.sameProfile(it, c.profileUrl) } }.forEach { vm.detected(it.id, "connected") }
+                }
+            }
             // While applying, notice the "thanks for applying" page.
             val key = vm.applyKey ?: vm.browserJob.value?.takeIf { k -> Store.data.jobs.any { it.key == k && it.applyOpenedAt > 0 } }
             if (key != null && Store.data.jobs.any { it.key == key && it.appliedAt == 0L }) {
@@ -329,6 +383,39 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView, pickFile: (
         }
     }
 
+
+    fun grabPeople(auto: Boolean) {
+        webView.evaluateJavascript(PEOPLE_JS) { raw ->
+            val arr = decodeJsResult(raw)?.let { runCatching { json.parseToJsonElement(it) as JsonArray }.getOrNull() }
+            val all = arr.orEmpty().mapNotNull { el ->
+                val o = el as? JsonObject ?: return@mapNotNull null
+                CapturedPerson(
+                    o["name"]?.jsonPrimitive?.content.orEmpty(), o["headline"]?.jsonPrimitive?.content.orEmpty(),
+                    o["url"]?.jsonPrimitive?.content.orEmpty(), o["degree"]?.jsonPrimitive?.intOrNull ?: 0,
+                    o["post"]?.jsonPrimitive?.content.orEmpty(), o["postUrl"]?.jsonPrimitive?.content.orEmpty(),
+                )
+            }.filter { it.url.isNotBlank() }
+            // New people, plus invited people who now show as 1st-degree (they accepted).
+            val useful = all.filter { cp ->
+                val known = Store.data.contacts.firstOrNull { Store.sameProfile(it.profileUrl, cp.url) }
+                known == null || (cp.degree == 1 && (known.stage == Stage.INVITED || known.stage == Stage.APPROVED || known.stage == Stage.SUGGESTED))
+            }
+            when {
+                useful.isNotEmpty() -> people = useful
+                !auto -> vm.toast("No new people on this page. Open a people search or hiring posts first.")
+                all.isNotEmpty() -> vm.toast("Everyone on this page is already in your list.")
+                else -> vm.toast("No results yet. Sign in to LinkedIn here, then tap Grab people.")
+            }
+        }
+    }
+
+    // A people search opened from a job: read the results as soon as they load.
+    val autoGrab by vm.autoGrab.collectAsState()
+    LaunchedEffect(pageLoads, autoGrab) {
+        if (autoGrab && pageLoads > 0 && webView.url.orEmpty().contains("/search/results/people")) {
+            delay(2500); vm.autoGrabDone(); grabPeople(auto = true)
+        }
+    }
     // While applying, fill each page as it loads.
     LaunchedEffect(pageLoads, applying?.key) {
         if (applying != null && pageLoads > 0) { delay(1800); runFill(quiet = true) }
@@ -427,27 +514,7 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView, pickFile: (
                     val (role, company) = JobRunner.titleFromPage(o["title"]?.jsonPrimitive?.content.orEmpty())
                     saveJob = listOf(o["url"]?.jsonPrimitive?.content.orEmpty(), role, company, o["text"]?.jsonPrimitive?.content.orEmpty())
                 }
-            }, Modifier.weight(1f).padding(end = 6.dp), primary = true) else Btn("Grab people", {
-                webView.evaluateJavascript(PEOPLE_JS) { raw ->
-                    val arr = decodeJsResult(raw)?.let { runCatching { json.parseToJsonElement(it) as JsonArray }.getOrNull() }
-                    val all = arr.orEmpty().mapNotNull { el ->
-                        val o = el as? JsonObject ?: return@mapNotNull null
-                        CapturedPerson(
-                            o["name"]?.jsonPrimitive?.content.orEmpty(), o["headline"]?.jsonPrimitive?.content.orEmpty(),
-                            o["url"]?.jsonPrimitive?.content.orEmpty(), o["degree"]?.jsonPrimitive?.intOrNull ?: 0,
-                            o["post"]?.jsonPrimitive?.content.orEmpty(), o["postUrl"]?.jsonPrimitive?.content.orEmpty(),
-                        )
-                    }.filter { it.url.isNotBlank() }
-                    // New people, plus invited people who now show as 1st-degree (they accepted).
-                    val useful = all.filter { cp ->
-                        val known = data.contacts.firstOrNull { Store.sameProfile(it.profileUrl, cp.url) }
-                        known == null || (cp.degree == 1 && (known.stage == Stage.INVITED || known.stage == Stage.APPROVED || known.stage == Stage.SUGGESTED))
-                    }
-                    // People who wrote a hiring post come first.
-                    if (useful.isEmpty()) vm.toast("No new people on this page. Open a people search or hiring posts first.")
-                    else people = useful.sortedByDescending { it.post.isNotBlank() }
-                }
-            }, Modifier.weight(1f).padding(end = 6.dp))
+            }, Modifier.weight(1f).padding(end = 6.dp), primary = true) else Btn("Grab people", { grabPeople(auto = false) }, Modifier.weight(1f).padding(end = 6.dp))
             Btn("Grab emails", {
                 webView.evaluateJavascript(TEXT_JS) { raw ->
                     val s = decodeJsResult(raw) ?: return@evaluateJavascript
@@ -464,25 +531,35 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView, pickFile: (
 
     // ---- dialogs ----
     people?.let { list ->
-        val checked = remember(list) { mutableStateListOf<Boolean>().apply { repeat(list.size) { add(true) } } }
+        // Rank everyone the way suggestions are ranked, and draft their note, before anything is added.
+        val previews = remember(list) {
+            val job = Store.data.jobs.firstOrNull { it.key == targetKey }
+            list.map { cp ->
+                cp to JobRunner.newContact(
+                    cp.name, cp.headline, cp.url, job, degree = cp.degree, tag = tag,
+                    source = if (cp.post.isNotBlank()) "post" else "search", postSnippet = Why.snippet(cp.post), postUrl = cp.postUrl,
+                )
+            }.sortedByDescending { it.second.rank }
+        }
+        val checked = remember(list) { mutableStateListOf<Boolean>().apply { previews.forEachIndexed { i, _ -> add(i < 10) } } }
         Dialog(
-            title = "Add ${checked.count { it }} as suggestions", onDismiss = { people = null }, confirm = "Add",
-            onConfirm = { vm.addCapturedPeople(list.filterIndexed { i, _ -> checked[i] }, targetKey, tag); people = null },
+            title = if (target != null) "People at ${target.company}" else "People on this page",
+            onDismiss = { people = null }, confirm = "Add ${checked.count { it }} to referrals",
+            onConfirm = { vm.addCapturedPeople(previews.filterIndexed { i, _ -> checked[i] }.map { it.first }, targetKey, tag); people = null },
         ) {
             Column {
-                Muted(
-                    (if (target != null) "For ${target.company}. " else "Not linked to a job. ") +
-                        "Nothing is sent: each one goes to your Inbox for approval."
-                )
-                LazyColumn(Modifier.heightIn(max = 400.dp)) {
-                    itemsIndexed(list) { i, cp ->
-                        Row(Modifier.fillMaxWidth().clickable { checked[i] = !checked[i] }, verticalAlignment = Alignment.CenterVertically) {
+                Muted("Best first. Each one goes to Inbox > Referrals with this message drafted. Nothing is sent until you tap Send there.")
+                LazyColumn(Modifier.heightIn(max = 440.dp)) {
+                    itemsIndexed(previews) { i, (cp, c) ->
+                        Row(Modifier.fillMaxWidth().clickable { checked[i] = !checked[i] }.padding(vertical = 4.dp), verticalAlignment = Alignment.Top) {
                             Checkbox(checked = checked[i], onCheckedChange = { checked[i] = it })
-                            Column {
+                            Column(Modifier.padding(top = 10.dp)) {
                                 Text(cp.name + if (cp.degree > 0) "  (${cp.degree}${listOf("st", "nd", "rd")[cp.degree - 1]})" else "", style = MaterialTheme.typography.bodyMedium)
                                 if (cp.headline.isNotBlank()) Muted(cp.headline, maxLines = 2)
-                                val snip = remember(cp.post) { Why.snippet(cp.post, 140) }
-                                if (snip.isNotBlank()) Muted("Hiring post: $snip", maxLines = 3, color = MaterialTheme.colorScheme.primary)
+                                if (c.why.isNotBlank()) Muted(c.why, color = ok, maxLines = 1)
+                                if (c.postSnippet.isNotBlank()) Muted("Hiring post: " + c.postSnippet, maxLines = 2, color = MaterialTheme.colorScheme.primary)
+                                val msg = if (c.stage == Stage.CONNECTED) c.ask else c.note
+                                if (msg.isNotBlank()) Quote(msg, Modifier.padding(top = 4.dp), maxLines = 3)
                             }
                         }
                     }

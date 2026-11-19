@@ -174,7 +174,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
     /** Opens a people search for the job. tag: "" (same role), "alumni", "colleague", "recruiter". */
+    /** Set when a people search was opened from a job: Browse reads the results as soon as they load. */
+    private val _autoGrab = MutableStateFlow(false)
+    val autoGrab = _autoGrab.asStateFlow()
+    fun autoGrabDone() { _autoGrab.value = false }
+
     fun findPeople(job: Job, tag: String = "") {
+        _autoGrab.value = true
         val p = Store.data.profile
         val extra = when (tag) {
             "alumni" -> p.college
@@ -376,7 +382,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val d = Store.data
         val now = System.currentTimeMillis()
         val isInvite = c.stage == Stage.APPROVED
-        val check = if (isInvite) Guard.canInvite(d, now) else Guard.canMessage(d, now)
+        val check = when {
+            isInvite -> Guard.canInvite(d, now)
+            c.direct && c.degree != 1 && c.connectedAt == 0L -> Guard.canDirect(d, now)
+            else -> Guard.canMessage(d, now)
+        }
         if (!check.ok) { toast(check.reason + if (queued) ". It is waiting in Send." else ""); return }
         val text = if (isInvite) c.note else c.ask
         if (text.isNotBlank()) {
@@ -397,6 +407,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
+    /** Skip the connection request and message them straight away (uses a direct message). */
+    fun messageDirectly(c: Contact) {
+        val d = Store.data
+        val job = d.jobs.firstOrNull { it.key == c.jobKey }
+        val next = c.copy(stage = Stage.ASK_APPROVED, direct = true, ask = if (c.edited) c.ask else JobRunner.draftDirect(d, c, job))
+        edit { Store.updateContact(c.id) { next } }
+        openForSend(next, queued = true)
+    }
+
+    /** Seen in Browse: the request shows as Pending, the message is in the thread, or they are now 1st-degree. */
+    fun detected(id: String, what: String) = edit {
+        val c = Store.data.contacts.firstOrNull { it.id == id } ?: return@edit
+        when (what) {
+            "pending" -> if (c.stage == Stage.APPROVED && c.openedAt > 0) { confirmSent(c, true); toast("Request to ${c.name} sent. Logged automatically.") }
+            "sent" -> if (c.stage == Stage.ASK_APPROVED && c.openedAt > 0) { confirmSent(c, true); toast("Message to ${c.name} sent. Logged automatically.") }
+            "connected" -> if (c.stage == Stage.SUGGESTED || c.stage == Stage.APPROVED || c.stage == Stage.INVITED) {
+                Store.updateContact(id) { it.copy(stage = Stage.CONNECTED, degree = 1, connectedAt = System.currentTimeMillis(), openedAt = 0) }
+                toast("${c.name} is connected. Their referral message is in your inbox.")
+            }
+        }
+    }
+
     fun confirmSent(c: Contact, sent: Boolean) = edit {
         val now = System.currentTimeMillis()
         if (!sent) { Store.updateContact(c.id) { it.copy(openedAt = 0) }; return@edit }
@@ -405,7 +437,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             Store.recordAction(ActionKind.INVITE, c.id)
         } else if (c.stage == Stage.ASK_APPROVED) {
             Store.updateContact(c.id) { it.copy(stage = Stage.ASKED, askedAt = now, openedAt = 0) }
-            Store.recordAction(ActionKind.MESSAGE, c.id)
+            Store.recordAction(if (c.direct && c.connectedAt == 0L) ActionKind.DIRECT else ActionKind.MESSAGE, c.id)
             if (c.jobKey.isNotBlank()) Store.updateJob(c.jobKey) { j ->
                 if (j.status == JobStatus.NEW || j.status == JobStatus.SAVED || j.status == JobStatus.APPLIED) j.copy(status = JobStatus.REFERRAL_ASKED) else j
             }

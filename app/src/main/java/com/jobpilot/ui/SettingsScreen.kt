@@ -118,7 +118,13 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
                 NumField("Minutes between sends", p.minGapMinutes, Modifier.weight(1f).padding(start = 6.dp)) { p = p.copy(minGapMinutes = it.coerceIn(1, 60)) }
             }
             Toggle("Warm up gradually", p.rampUp, "A third of the caps in week one, two thirds in week two.") { p = p.copy(rampUp = it) }
-            Toggle("Open profiles in the LinkedIn app", p.openInLinkedInApp, "Off: profiles open in the built-in browser, where limit notices are detected automatically.") { p = p.copy(openInLinkedInApp = it) }
+            Toggle(
+                "Open profiles in the LinkedIn app", p.openInLinkedInApp,
+                "Off (recommended): profiles open in Browse, where JobPilot sees the request go to Pending or your message appear, and logs it without asking. It also spots limit notices.",
+            ) { p = p.copy(openInLinkedInApp = it) }
+            NumField("Messages to non-connections per month", p.directPerMonth) { p = p.copy(directPerMonth = it.coerceIn(0, 50)) }
+            Toggle("I have LinkedIn Premium", p.premium, "InMail credits come back when the person replies within 90 days, so answered messages don't count.") { p = p.copy(premium = it) }
+            Muted("Direct messages are offered only for people you aren't connected to. Save them for those with a hiring post or on the posting. Members with an Open Profile can be messaged free; LinkedIn shows that on their profile.")
             NumField("Flag invites unanswered after N days", p.staleInviteDays) { p = p.copy(staleInviteDays = it.coerceIn(7, 60)) }
 
             SectionTitle("Messages")

@@ -241,6 +241,8 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                             card.c.note.ifBlank { "No note. A plain request will be sent." },
                         ) {
                             Btn("Send request", { vm.approveAndSend(card.c) }, primary = true)
+                            val left = Guard.directLeft(data, now)
+                            if (left > 0 && card.c.degree != 1) Quiet("Message directly ($left left)", { vm.messageDirectly(card.c) })
                             Quiet("Later", { vm.approveInvite(card.c.id) })
                             Quiet(if (data.profile.aiConfigured) "Edit / AI" else "Edit", { editPerson = card.c })
                             Quiet("Skip", { vm.skipContact(card.c.id) })
@@ -267,7 +269,9 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                             }
                         }
                         is Card.NewJob -> JobCard(card.job, data.profile.homeCountry, onOpen = { vm.openJob(card.job.key) },
-                            onKeep = { vm.keepJob(card.job.key) }, onSkip = { vm.skipJob(card.job.key) })
+                            onKeep = { vm.keepJob(card.job.key) }, onSkip = { vm.skipJob(card.job.key) },
+                            onPeople = { vm.findPeople(card.job) },
+                            known = data.contacts.count { it.stage != Stage.SKIPPED && (it.jobKey == card.job.key || (it.company.isNotBlank() && it.company.equals(card.job.company, true))) })
                         is Card.ApplyHead -> Panel {
                             Label("Applications")
                             Text(
@@ -464,7 +468,10 @@ private fun EmailCard(e: EmailLead, onApprove: () -> Unit, onEdit: () -> Unit, o
 }
 
 @Composable
-private fun JobCard(job: Job, home: String, onOpen: () -> Unit, onKeep: () -> Unit, onSkip: () -> Unit) {
+private fun JobCard(
+    job: Job, home: String, onOpen: () -> Unit, onKeep: () -> Unit, onSkip: () -> Unit,
+    onPeople: () -> Unit = {}, known: Int = 0,
+) {
     Panel(onClick = onOpen) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Label("New job · ${job.source}", Modifier.weight(1f))
@@ -478,8 +485,10 @@ private fun JobCard(job: Job, home: String, onOpen: () -> Unit, onKeep: () -> Un
             job.reasons.take(4).forEach { Mark("+", it, ok, maxLines = 2) }
             job.cautions.take(3).forEach { Mark("-", it, warn, maxLines = 2) }
         }
+        if (known > 0) Muted("$known ${if (known == 1) "person" else "people"} at ${job.company} already in your referrals", Modifier.padding(top = 6.dp), color = ok)
         ButtonRow {
             Btn("Keep", onKeep, primary = true)
+            Btn("People to ask", { onKeep(); onPeople() })
             Quiet("Skip", onSkip)
             Quiet("Details", onOpen)
         }

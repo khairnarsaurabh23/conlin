@@ -334,8 +334,19 @@ object JobRunner {
             // 2.4 sorts jobs into remote / abroad / visa / startup: tag what is already stored.
             d = rescoreAll(d).copy(schema = 5)
         }
+        if (d.schema < 6) {
+            // 2.6 confirms sends by reading the page in Browse, so profiles open there by default.
+            d = d.copy(profile = d.profile.copy(openInLinkedInApp = false), schema = 6)
+        }
         return d
     }
+
+    /** A first message to someone you aren't connected to: the reason, the fit and the ask in one. */
+    fun draftDirect(d: AppData, c: Contact, job: Job?): String = fillFor(
+        "Hi {firstName}, {opening}. I have {experience} with {topSkills} and I'm applying for the role. " +
+            "Would you be open to referring me, or pointing me to the right person? I can send my resume. Thanks,\n{myName}",
+        d, c, job,
+    )
 
     fun draftFollowUp(p: Profile, c: Contact, job: Job?): String = Templates.fill(
         "Hi {firstName}, following up on my note about the {role} role at {company}. " +
