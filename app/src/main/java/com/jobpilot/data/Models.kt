@@ -25,6 +25,16 @@ data class Profile(
     val useLinkedIn: Boolean = true,
     val useJSearch: Boolean = false,
     val jsearchApiKey: String = "",
+    /** Monthly Hacker News "Who is hiring?" thread: mostly startups, many remote or with visa support. */
+    val useHackerNews: Boolean = true,
+    /** Remotive: remote-only jobs. */
+    val useRemotive: Boolean = true,
+    /** Arbeitnow: jobs in Europe, many in English and with visa sponsorship. */
+    val useArbeitnow: Boolean = true,
+    /** Careers pages on Ashby, Lever or Greenhouse (links or "ashby:name"), one per line. */
+    val startupBoards: String = "",
+    /** Used to tell remote-for-you from remote-elsewhere, and home from abroad. */
+    val homeCountry: String = "India",
 
     // Mail (Gmail app password is used for both sending and the read-only reply scan)
     val smtpHost: String = "smtp.gmail.com",
@@ -196,6 +206,8 @@ data class Job(
     val cautions: List<String> = emptyList(),
     /** The tailored resume content behind [tailoredResume], when one was generated. */
     val tailored: TailoredResume? = null,
+    /** Categories: remote, remote-elsewhere, abroad, home, visa, startup. */
+    val tags: List<String> = emptyList(),
 )
 
 @Serializable
@@ -365,4 +377,6 @@ data class AppData(
     val mailScan: MailScanLog = MailScanLog(),
     /** Data version, bumped by one-off upgrades. */
     val schema: Int = 0,
+    /** When each rate-limited source was last fetched (epoch ms). */
+    val sourceRuns: Map<String, Long> = emptyMap(),
 )

@@ -12,6 +12,7 @@ import com.jobpilot.data.RunLog
 import com.jobpilot.data.Stage
 import com.jobpilot.data.Store
 import com.jobpilot.net.Http
+import com.jobpilot.net.Feeds
 import com.jobpilot.net.JSearch
 import com.jobpilot.net.LinkedInJobs
 import kotlinx.coroutines.delay
@@ -53,6 +54,33 @@ object JobRunner {
                 onProgress("Searching JSearch: ${s.label()}")
                 found += JSearch.search(s, profile.jsearchApiKey) { errors += it }
             }
+            if (profile.useHackerNews) {
+                onProgress("Searching Hacker News: ${s.label()}")
+                found += Feeds.hackerNews(s) { errors += it }
+            }
+        }
+        val now = System.currentTimeMillis()
+        // Remotive asks for no more than a few calls a day.
+        if (profile.useRemotive && now - (Store.data.sourceRuns["remotive"] ?: 0L) > 6 * 3_600_000L) {
+            for (s in searches) {
+                onProgress("Searching Remotive: ${s.keywords}")
+                found += Feeds.remotive(s) { errors += it }
+            }
+            Store.update { it.copy(sourceRuns = it.sourceRuns + ("remotive" to now)) }
+        }
+        // Feeds without search: fetch once, then match each saved search.
+        val shared = mutableListOf<Job>()
+        if (profile.useArbeitnow) {
+            onProgress("Reading Arbeitnow (Europe)")
+            shared += Feeds.arbeitnow({ errors += it })
+        }
+        for (b in Feeds.parseBoards(profile.startupBoards)) {
+            onProgress("Reading ${b.token} careers page")
+            shared += Feeds.board(b) { errors += it }
+        }
+        for (j in shared) {
+            val s = searches.firstOrNull { Feeds.matches(it.keywords, j.title, j.description) } ?: continue
+            found += j.copy(searchId = s.id)
         }
         val excludeBySearch = searches.associate { s ->
             s.id to s.excludeWords.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
@@ -113,11 +141,39 @@ object JobRunner {
 
     fun rescore(j: Job, p: Profile, keywords: String, prefs: TitlePrefs = TitlePrefs.NONE): Job {
         val r = Matcher.score(j, p, keywords, prefs)
+        val c = Classify.of(j, p.homeCountry)
+        var score = r.score
+        if ("remote-elsewhere" in c.tags) score -= 8
+        if (c.cautions.any { it.startsWith("Says no visa") }) score -= 6
         val mails = if (j.description.isNotBlank()) Emails.extract(j.description).map { it.email } else j.emailsFound
         return j.copy(
-            matchScore = r.score, matchedSkills = r.matched, missingSkills = r.missing, emailsFound = mails,
-            reasons = r.reasons, cautions = r.cautions,
+            matchScore = score.coerceIn(0, 100), matchedSkills = r.matched, missingSkills = r.missing, emailsFound = mails,
+            reasons = c.reasons + r.reasons, cautions = c.cautions + r.cautions, tags = c.tags,
         )
+    }
+
+    /** A job saved from a web page the user was looking at (Wellfound, YC and others). */
+    suspend fun saveWebJob(url: String, title: String, company: String, location: String, text: String): String {
+        val clean = url.substringBefore("#")
+        val key = "web:" + clean.substringBefore("?").trimEnd('/')
+        if (Store.data.jobs.any { it.key == key }) {
+            Store.updateJob(key) { if (it.status == JobStatus.NEW || it.status == JobStatus.IGNORED) it.copy(status = JobStatus.SAVED) else it }
+            return "Already tracked. Marked as kept."
+        }
+        val job = Job(
+            key = key, source = Feeds.siteName(clean), title = title.trim().ifBlank { "Saved job" }, company = company.trim(),
+            location = location.trim(), url = clean, applyUrl = clean, description = text.take(10000),
+            detailsFetched = text.isNotBlank(), status = JobStatus.SAVED,
+        )
+        Store.update { d -> d.copy(jobs = listOf(rescore(job, d.profile, defaultRole(d), TitlePrefs.of(d.jobs))) + d.jobs) }
+        if (text.isNotBlank()) queueEmails(listOf(Store.data.jobs.first { it.key == key }))
+        return "Saved: ${job.title}" + if (job.company.isNotBlank()) " at ${job.company}" else ""
+    }
+
+    /** "Senior Engineer at Acme | Wellfound" -> (title, company). */
+    fun titleFromPage(pageTitle: String): Pair<String, String> {
+        val t = pageTitle.split(" | ", " \u2022 ", " \u00b7 ", " \u2014 ").first().trim()
+        return splitTitle(t)
     }
 
     fun rescoreAll(d: AppData): AppData {
@@ -259,6 +315,10 @@ object JobRunner {
             // Dark is the default again; light stays available in Settings.
             d = d.copy(profile = d.profile.copy(theme = "dark"), schema = 4)
         }
+        if (d.schema < 5) {
+            // 2.4 sorts jobs into remote / abroad / visa / startup: tag what is already stored.
+            d = rescoreAll(d).copy(schema = 5)
+        }
         return d
     }
 
@@ -392,9 +452,20 @@ object JobRunner {
                 f.forEach { if (addEmailLead(it.email, it.context, anyUrl)) n++ }
                 if (f.isNotEmpty()) return "Found ${f.size} email(s) in the post. $n new draft(s) added."
             }
-            return "No email found in that link. Open it in the LinkedIn tab and tap Grab emails."
+            return "No email found in that link. Open it in the Browse tab and tap Grab emails."
         }
-        return "Nothing recognised. Share a LinkedIn profile, a job, or a post containing an email."
+
+        // 5. Any other job link (Wellfound, YC, a careers page): save it as a job.
+        if (anyUrl != null) {
+            val html = runCatching { Http.get(anyUrl) }.getOrNull()
+            val doc = html?.let { org.jsoup.Jsoup.parse(it) }
+            val pageTitle = doc?.selectFirst("meta[property=og:title]")?.attr("content")?.ifBlank { null } ?: doc?.title().orEmpty()
+            val sharedTitle = t.substringBefore("http").lines().firstOrNull { it.isNotBlank() }.orEmpty().trim()
+            val (role, company) = titleFromPage(pageTitle.ifBlank { sharedTitle })
+            val body = doc?.body()?.text().orEmpty()
+            return saveWebJob(anyUrl, role.ifBlank { sharedTitle }, company, "", body)
+        }
+        return "Nothing recognised. Share a job link, a LinkedIn profile, or a post containing an email."
     }
 
     /** "Android Developer at Acme" / "Acme hiring Android Developer in Pune" */

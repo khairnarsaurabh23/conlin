@@ -74,8 +74,9 @@ private fun JobsList(vm: AppViewModel, data: AppData) {
     var filter by rememberSaveable { mutableStateOf(JobFilter.KEPT) }
     var query by rememberSaveable { mutableStateOf("") }
     var newest by rememberSaveable { mutableStateOf(false) }
+    var cat by rememberSaveable { mutableStateOf(JobCat.ALL) }
 
-    val list = data.jobs.asSequence().filter { j ->
+    val byStatus = data.jobs.filter { j ->
         when (filter) {
             JobFilter.KEPT -> j.status == JobStatus.SAVED
             JobFilter.NEW -> j.status == JobStatus.NEW
@@ -84,7 +85,9 @@ private fun JobsList(vm: AppViewModel, data: AppData) {
             JobFilter.ALL -> j.status != JobStatus.IGNORED
             JobFilter.SKIPPED -> j.status == JobStatus.IGNORED || j.status == JobStatus.REJECTED
         }
-    }.filter { query.isBlank() || (it.title + " " + it.company + " " + it.location).contains(query, ignoreCase = true) }
+    }
+    val list = byStatus.asSequence().filter { cat.test(it) }
+        .filter { query.isBlank() || (it.title + " " + it.company + " " + it.location).contains(query, ignoreCase = true) }
         .let { s -> if (newest) s.sortedByDescending { it.foundAt } else s.sortedByDescending { it.matchScore } }
         .toList()
 
@@ -92,6 +95,7 @@ private fun JobsList(vm: AppViewModel, data: AppData) {
         Seg(JobFilter.entries, filter, { it.label }, Modifier.weight(1f)) { filter = it }
         Quiet(if (newest) "Newest" else "Best match", { newest = !newest })
     }
+    CatFilter(byStatus, cat, data.profile.homeCountry) { cat = it }
     Field("Search title, company or place", query, Modifier.padding(horizontal = 16.dp)) { query = it }
     if (list.isEmpty()) EmptyNote("No jobs here", "New jobs arrive in your Inbox. The ones you keep are listed here.")
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -101,6 +105,7 @@ private fun JobsList(vm: AppViewModel, data: AppData) {
                     Column(Modifier.weight(1f)) {
                         Text(j.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Muted(listOf(j.company, j.location).filter { it.isNotBlank() }.joinToString(", "), maxLines = 1)
+                        JobTags(j, data.profile.homeCountry, Modifier.padding(top = 4.dp))
                         Label(
                             listOf(j.status.label.lowercase(), "found ${day(j.foundAt)}", if (j.emailsFound.isNotEmpty()) "has email" else "",
                                 if (j.tailoredResume.isNotBlank()) "resume tailored" else "").filter { it.isNotBlank() }.joinToString(" | "),

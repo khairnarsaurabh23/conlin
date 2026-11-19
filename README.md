@@ -29,7 +29,9 @@ Approved emails are sent from the app through Gmail (with an App Password), or o
 
 ## Other features
 
-- **Job search**: LinkedIn's public listings (no sign-in), optionally JSearch for Indeed, Glassdoor, Naukri and company sites. Runs in the background every 12 hours by default.
+- **Job search**: LinkedIn's public listings (no sign-in), Hacker News "Who is hiring" (startups), Remotive (remote), Arbeitnow (Europe, often with visa sponsorship), any startup careers pages you add on Ashby, Lever or Greenhouse, and optionally JSearch for Indeed, Glassdoor and Naukri. Runs in the background every 12 hours by default.
+- **Categories**: every job is tagged Remote, Remote (other region), Abroad, Visa, Startup or Home, and the Inbox and Tracker filter by them.
+- **Wellfound, YC and other sites**: they have no open feed, so open them in the Browse tab and tap Save this job, or share a job link to JobPilot.
 - **Match score** from the title, your skills, the years asked for, how fresh the posting is, and what you kept or skipped before. Jobs under a threshold stay out of the inbox.
 - **Hiring posts**: on a posts search in the LinkedIn tab, Grab people picks up authors of hiring posts together with what they wrote.
 - **Resume tailoring**: for a job, reorders your skills and summary around what the posting asks for and builds a one-page PDF, which is then attached to emails for that job. It rearranges what you entered; it does not invent experience.

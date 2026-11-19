@@ -145,7 +145,11 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
     // Until a tab is picked, show the first one that has something in it.
     var chosen by rememberSaveable { mutableStateOf<InboxTab?>(null) }
     val tab = chosen ?: InboxTab.entries.firstOrNull { count(it) > 0 } ?: InboxTab.JOBS
-    val cards = all.getValue(tab)
+    var cat by rememberSaveable { mutableStateOf(JobCat.ALL) }
+    val newJobs = all.getValue(InboxTab.JOBS).mapNotNull { (it as? Card.NewJob)?.job }
+    val cards = all.getValue(tab).let { list ->
+        if (tab == InboxTab.JOBS && cat != JobCat.ALL) list.filter { it is Card.NewJob && cat.test(it.job) } else list
+    }
 
     var editPerson by remember { mutableStateOf<Contact?>(null) }
     var editEmail by remember { mutableStateOf<EmailLead?>(null) }
@@ -185,6 +189,9 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                     "LinkedIn doesn't let apps send for you, so each one takes a tap: JobPilot copies the text and opens the profile, you press Connect or Message and paste, then confirm here.",
                     Modifier.padding(start = 4.dp, end = 4.dp, bottom = 12.dp),
                 )
+            }
+            if (tab == InboxTab.JOBS && newJobs.isNotEmpty()) item(key = "cats") {
+                CatFilter(newJobs, cat, data.profile.homeCountry, Modifier.padding(bottom = 6.dp)) { cat = it }
             }
             if (cards.isEmpty()) item(key = "empty") { EmptyInbox(data, tab) }
             items(cards, key = { it.key }) { card ->
@@ -242,7 +249,7 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                                 Quiet("Not now", { vm.dismissPeoplePrompt(card.job.key) })
                             }
                         }
-                        is Card.NewJob -> JobCard(card.job, onOpen = { vm.openJob(card.job.key) },
+                        is Card.NewJob -> JobCard(card.job, data.profile.homeCountry, onOpen = { vm.openJob(card.job.key) },
                             onKeep = { vm.keepJob(card.job.key) }, onSkip = { vm.skipJob(card.job.key) })
                         is Card.More -> Row(verticalAlignment = Alignment.CenterVertically) {
                             Muted(card.text, Modifier.weight(1f))
@@ -423,14 +430,15 @@ private fun EmailCard(e: EmailLead, onApprove: () -> Unit, onEdit: () -> Unit, o
 }
 
 @Composable
-private fun JobCard(job: Job, onOpen: () -> Unit, onKeep: () -> Unit, onSkip: () -> Unit) {
+private fun JobCard(job: Job, home: String, onOpen: () -> Unit, onKeep: () -> Unit, onSkip: () -> Unit) {
     Panel(onClick = onOpen) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Label("new job", Modifier.weight(1f))
+            Label("New job · ${job.source}", Modifier.weight(1f))
             ScoreText(job.matchScore)
         }
         Text(job.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
         Muted(listOf(job.company, job.location).filter { it.isNotBlank() }.joinToString(", "), maxLines = 1)
+        JobTags(job, home, Modifier.padding(top = 6.dp))
         if (job.reasons.isNotEmpty() || job.cautions.isNotEmpty()) {
             Gap(6)
             job.reasons.take(4).forEach { Mark("+", it, ok, maxLines = 2) }

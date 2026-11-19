@@ -170,6 +170,17 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
             Toggle("LinkedIn public listings", p.useLinkedIn, "No sign-in involved.") { p = p.copy(useLinkedIn = it) }
             Toggle("JSearch", p.useJSearch, "Adds Indeed, Glassdoor, Naukri and company sites. Free key from rapidapi.com.") { p = p.copy(useJSearch = it) }
             if (p.useJSearch) Field("JSearch RapidAPI key", p.jsearchApiKey, secret = true) { p = p.copy(jsearchApiKey = it.trim()) }
+            Toggle("Hacker News: Who is hiring", p.useHackerNews, "Monthly thread of mostly startup jobs, many remote or with visa support. Posts often include an email to apply.") { p = p.copy(useHackerNews = it) }
+            Toggle("Remotive", p.useRemotive, "Remote jobs. Checked at most every 6 hours, as Remotive asks.") { p = p.copy(useRemotive = it) }
+            Toggle("Arbeitnow", p.useArbeitnow, "Jobs in Europe, mostly Germany, many in English and with visa sponsorship.") { p = p.copy(useArbeitnow = it) }
+            Field("Startup careers pages, one per line", p.startupBoards, lines = 3) { p = p.copy(startupBoards = it) }
+            Muted("Paste careers links from jobs.ashbyhq.com, jobs.lever.co or boards.greenhouse.io. Many YC and Wellfound startups host their jobs there, and new openings show up here automatically.")
+            Muted(
+                "Wellfound and YC's job board have no open feed. Open them from the Browse tab and tap Save this job, or share a job link to JobPilot from any app.",
+                Modifier.padding(top = 6.dp),
+            )
+            Field("Home country", p.homeCountry) { p = p.copy(homeCountry = it.trim()) }
+            Muted("Decides what counts as abroad, and which remote jobs are open to you.")
             NumField("Read full details for the best N new jobs per check", p.detailFetchLimit) { p = p.copy(detailFetchLimit = it.coerceIn(0, 50)) }
             Toggle("Check in the background", p.autoCheckEnabled) { p = p.copy(autoCheckEnabled = it) }
             if (p.autoCheckEnabled) NumField("Every N hours", p.autoCheckHours) { p = p.copy(autoCheckHours = it.coerceIn(1, 72)) }

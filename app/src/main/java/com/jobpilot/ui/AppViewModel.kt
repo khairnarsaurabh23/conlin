@@ -44,7 +44,7 @@ import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
-enum class Tab(val title: String) { INBOX("Inbox"), TRACKER("Tracker"), LINKEDIN("LinkedIn"), INSIGHTS("Insights") }
+enum class Tab(val title: String) { INBOX("Inbox"), TRACKER("Tracker"), LINKEDIN("Browse"), INSIGHTS("Insights") }
 
 data class CapturedPerson(
     val name: String, val headline: String, val url: String, val degree: Int = 0,
@@ -518,6 +518,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------------- Shared into the app ----------------
+
+    fun saveWebJob(url: String, title: String, company: String, location: String, text: String) =
+        launchBusy("Saving the job") { toast(JobRunner.saveWebJob(url, title, company, location, text)) }
 
     fun handleShared(text: String) = launchBusy("Reading what you shared") { toast(JobRunner.handleShared(text)) }
 

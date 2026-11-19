@@ -409,3 +409,74 @@ data class Insights(
         }
     }
 }
+
+
+/**
+ * Sorts a job into the groups shown as filters: remote (open to you), remote somewhere else,
+ * abroad, home country, visa sponsorship and startup. Works from the location and the text.
+ */
+object Classify {
+    private val INDIA = listOf(
+        "india", "bengaluru", "bangalore", "pune", "mumbai", "hyderabad", "chennai", "delhi", "gurgaon", "gurugram",
+        "noida", "kolkata", "ahmedabad", "kochi", "jaipur", "indore", "chandigarh", "coimbatore", "trivandrum",
+        "thiruvananthapuram", "nagpur", "mohali", "vadodara", "bhubaneswar", "thane", "nashik", "surat", "mysore", "mysuru",
+    )
+    private val OPEN = listOf("worldwide", "anywhere", "global", "international", "all countries", "any location", "apac", "asia")
+    private val REGION = Regex(
+        "(?i)\\b(us|usa|u\\.s\\.?|united states|north america|americas|canada|uk|united kingdom|eu|europe|european|emea|latam|" +
+            "germany|france|spain|netherlands|poland|portugal|ireland|australia|brazil|mexico|est|pst|cet|time ?zones?)\\b"
+    )
+    private val REMOTE = Regex("(?i)\\b(remote|anywhere|work from home|wfh|distributed)\\b")
+    private val NO_VISA = Regex(
+        "(?i)((no|not|unable to|cannot|can't|won't|will not|do not|don't|does not)\\s+(currently\\s+)?(offer\\s+|provide\\s+)?(visa\\s+)?sponsor" +
+            "|without (visa )?sponsorship|must (already )?(have|hold) (the )?(right|authori[sz]ation) to work|must be (legally )?authori[sz]ed)"
+    )
+    private val VISA = Regex("(?i)visa sponsorship|sponsor(ship)? (your |a |work )?visa|visa support|relocation (support|package|assistance|bonus)|relocate you|help(s)? (you )?relocate|\\bvisa\\b")
+    private val STARTUP_TEXT = Regex("(?i)\\b(seed|series [a-c]|yc [swfx]\\d\\d|y combinator|early[- ]stage|founding (engineer|team)|startup)\\b")
+    private val STARTUP_SOURCES = listOf("hacker news", " careers", "wellfound", "y combinator", "work at a startup")
+
+    data class Result(val tags: List<String>, val reasons: List<String>, val cautions: List<String>)
+
+    fun homeWords(home: String): List<String> =
+        if (home.isBlank() || home.equals("india", true)) INDIA else listOf(home.trim().lowercase())
+
+    fun of(job: Job, home: String): Result {
+        val loc = job.location.lowercase()
+        val hw = homeWords(home)
+        val homeName = home.ifBlank { "India" }
+        val text = (job.title + "\n" + job.location + "\n" + job.criteria + "\n" + job.description.take(6000)).lowercase()
+        val tags = mutableListOf<String>()
+        val reasons = mutableListOf<String>()
+        val cautions = mutableListOf<String>()
+
+        val remote = REMOTE.containsMatchIn(loc)
+        val inHome = hw.any { loc.contains(it) } || (hw === INDIA && Regex(",\\s*in$").containsMatchIn(loc.trim()))
+        if (remote) {
+            val openWord = OPEN.firstOrNull { loc.contains(it) }
+            when {
+                inHome -> { tags += "remote"; reasons += "Remote, open to $homeName" }
+                openWord != null -> { tags += "remote"; reasons += "Remote, open worldwide" }
+                REGION.containsMatchIn(job.location) -> {
+                    tags += "remote-elsewhere"
+                    val inParens = Regex("(?i)remote\\s*\\(([^)]*)\\)").findAll(job.location).map { it.groupValues[1].trim() }.toList()
+                    val region = if (inParens.isNotEmpty()) inParens.joinToString(", ")
+                    else job.location.replace(Regex("(?i)\\bremote\\b,?\\s*"), "").trim(' ', ',').ifBlank { job.location }
+                    cautions += "Remote, but only for $region"
+                }
+                else -> { tags += "remote"; reasons += "Remote" }
+            }
+        }
+        if (inHome) tags += "home"
+        // A real place that is not home: strip the remote/arrangement words and see what is left.
+        val place = loc.replace(Regex("remote|hybrid|on-?site|in-office|anywhere|worldwide|full[- ]?time|\\(|\\)|[^a-z ]"), " ").trim()
+        if (!inHome && place.length >= 2 && "remote" !in tags) tags += "abroad"
+
+        val away = "abroad" in tags || "remote-elsewhere" in tags
+        if (away || job.source == "Hacker News" || job.source == "Arbeitnow") {
+            if (NO_VISA.containsMatchIn(text)) { if (away) cautions += "Says no visa sponsorship" }
+            else if (VISA.containsMatchIn(text)) { tags += "visa"; reasons += "Mentions visa sponsorship or relocation" }
+        }
+        if (STARTUP_SOURCES.any { job.source.lowercase().contains(it) } || STARTUP_TEXT.containsMatchIn(text)) tags += "startup"
+        return Result(tags.distinct(), reasons, cautions)
+    }
+}

@@ -143,6 +143,9 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
     var people by remember { mutableStateOf<List<CapturedPerson>?>(null) }
     var emails by remember { mutableStateOf<Pair<String, List<Emails.Found>>?>(null) }
     var profileImport by remember { mutableStateOf<Triple<String, String, String>?>(null) }
+    var pageUrl by remember { mutableStateOf(webView.url.orEmpty()) }
+    var saveJob by remember { mutableStateOf<List<String>?>(null) } // url, title, company, text
+    val onLinkedIn = pageUrl.isBlank() || pageUrl.contains("linkedin.com")
 
     LaunchedEffect(Unit) {
         webView.webViewClient = object : WebViewClient() {
@@ -152,7 +155,7 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
             }
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) { loading = true }
             override fun onPageFinished(view: WebView, url: String?) {
-                loading = false; title = view.title ?: url.orEmpty(); canBack = view.canGoBack()
+                loading = false; title = view.title ?: url.orEmpty(); canBack = view.canGoBack(); pageUrl = url.orEmpty()
             }
         }
         if (webView.url == null && pendingUrl == null) webView.loadUrl("https://www.linkedin.com/login")
@@ -218,6 +221,9 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
             Quiet("Messages", { go("https://www.linkedin.com/messaging/") })
             Quiet("Sent invites", { go("https://www.linkedin.com/mynetwork/invitation-manager/sent/") })
             Quiet("Connections", { go("https://www.linkedin.com/mynetwork/invite-connect/connections/") })
+            Quiet("Wellfound", { go("https://wellfound.com/jobs") })
+            Quiet("YC jobs", { go("https://www.ycombinator.com/jobs") })
+            Quiet("HN jobs", { go("https://news.ycombinator.com/jobs") })
             Quiet("Hiring posts", { go("https://www.linkedin.com/search/results/content/?keywords=${enc("hiring $role email resume")}&sortBy=%22date_posted%22") })
             if (target != null) {
                 val base = "https://www.linkedin.com/search/results/people/?keywords="
@@ -242,7 +248,14 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Btn("Grab people", {
+            if (!onLinkedIn) Btn("Save this job", {
+                webView.evaluateJavascript(TEXT_JS) { raw ->
+                    val str = decodeJsResult(raw) ?: return@evaluateJavascript
+                    val o = runCatching { json.parseToJsonElement(str).jsonObject }.getOrNull() ?: return@evaluateJavascript
+                    val (role, company) = JobRunner.titleFromPage(o["title"]?.jsonPrimitive?.content.orEmpty())
+                    saveJob = listOf(o["url"]?.jsonPrimitive?.content.orEmpty(), role, company, o["text"]?.jsonPrimitive?.content.orEmpty())
+                }
+            }, Modifier.weight(1f).padding(end = 6.dp), primary = true) else Btn("Grab people", {
                 webView.evaluateJavascript(PEOPLE_JS) { raw ->
                     val arr = decodeJsResult(raw)?.let { runCatching { json.parseToJsonElement(it) as JsonArray }.getOrNull() }
                     val all = arr.orEmpty().mapNotNull { el ->
@@ -324,6 +337,23 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView) {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    saveJob?.let { v ->
+        var t by remember(v) { mutableStateOf(v[1]) }
+        var c by remember(v) { mutableStateOf(v[2]) }
+        var l by remember(v) { mutableStateOf("") }
+        Dialog(
+            title = "Save this job", onDismiss = { saveJob = null }, confirm = "Save", confirmEnabled = t.isNotBlank(),
+            onConfirm = { vm.saveWebJob(v[0], t, c, l, v[3]); saveJob = null },
+        ) {
+            Column {
+                Muted("From ${com.jobpilot.net.Feeds.siteName(v[0])}. The page text is kept for matching, tailoring and emails.")
+                Field("Job title", t) { t = it }
+                Field("Company", c) { c = it }
+                Field("Location, e.g. Remote or Bengaluru", l) { l = it }
             }
         }
     }
