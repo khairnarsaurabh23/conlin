@@ -181,19 +181,26 @@ object Feeds {
         }.take(p.maxResults)
     }
 
-    // ---------------- Startup careers pages (Ashby, Lever, Greenhouse) ----------------
+    // ---------------- Company careers pages (Ashby, Lever, Greenhouse, BambooHR, Workable, ...) ----------------
 
     data class Board(val kind: String, val token: String)
 
-    /** Accepts careers links or "ashby:name", "lever:name", "greenhouse:name", one per line or comma separated. */
+    val KINDS = listOf("ashby", "lever", "greenhouse", "bamboohr", "workable", "teamtailor", "breezy", "smartrecruiters")
+
+    /** Accepts careers links or "kind:name" (e.g. "lever:acme", "bamboohr:turium"), one per line or comma separated. */
     fun parseBoards(s: String): List<Board> = s.split(Regex("[,\\s]+")).mapNotNull { raw ->
         val t = raw.trim().trimEnd('/')
         fun after(marker: String) = t.substringAfter(marker).substringBefore("/").substringBefore("?").substringBefore("#")
+        fun host(u: String) = u.substringAfter("://").substringBefore("/").removePrefix("www.").lowercase()
         when {
             t.isBlank() -> null
-            t.startsWith("ashby:", true) -> Board("ashby", t.substringAfter(":"))
-            t.startsWith("lever:", true) -> Board("lever", t.substringAfter(":"))
-            t.startsWith("greenhouse:", true) -> Board("greenhouse", t.substringAfter(":"))
+            KINDS.any { t.startsWith("$it:", true) } -> Board(t.substringBefore(":").lowercase(), t.substringAfter(":"))
+            t.contains(".bamboohr.com") -> Board("bamboohr", host(t).substringBefore(".bamboohr.com"))
+            t.contains("apply.workable.com/") -> Board("workable", after("apply.workable.com/"))
+            t.contains(".workable.com") -> Board("workable", host(t).substringBefore(".workable.com"))
+            t.contains(".teamtailor.com") -> Board("teamtailor", host(t).substringBefore(".teamtailor.com"))
+            t.contains(".breezy.hr") -> Board("breezy", host(t).substringBefore(".breezy.hr"))
+            t.contains("smartrecruiters.com/") -> Board("smartrecruiters", after("smartrecruiters.com/"))
             t.contains("ashbyhq.com/") -> Board("ashby", after("ashbyhq.com/"))
             t.contains("lever.co/") -> Board("lever", after("lever.co/"))
             t.contains("greenhouse.io/") && t.contains("for=") -> Board("greenhouse", t.substringAfter("for=").substringBefore("&"))
@@ -258,6 +265,86 @@ object Feeds {
                         )
                     }
                 }
+                "bamboohr" -> {
+                    val origin = "https://${b.token}.bamboohr.com"
+                    val root = parse(Http.get("$origin/careers/list", mapOf("Accept" to "application/json"))) as? JsonObject ?: return emptyList()
+                    root.a("result").objects().mapNotNull { o ->
+                        val id = o.s("id").ifBlank { return@mapNotNull null }
+                        val l = o.o("location")
+                        val remote = o.s("isRemote") == "true" || o.s("locationType") == "1"
+                        val loc = listOf(l?.s("city").orEmpty(), l?.s("state").orEmpty(), if (remote) "Remote" else "").filter { it.isNotBlank() }.joinToString(", ")
+                        Job(
+                            key = "bh:${b.token}:$id", source = src, title = o.s("jobOpeningName").trim(), company = name, location = loc,
+                            url = "$origin/careers/$id", applyUrl = "$origin/careers/$id",
+                            criteria = listOf(o.s("employmentStatusLabel"), o.s("departmentLabel")).filter { it.isNotBlank() }.joinToString(" · "),
+                        )
+                    }
+                }
+                "workable" -> {
+                    val root = parse(Http.get("https://apply.workable.com/api/v1/widget/accounts/${enc(b.token)}?details=true")) as? JsonObject ?: return emptyList()
+                    val company = root.s("name").ifBlank { name }
+                    root.a("jobs").objects().mapNotNull { o ->
+                        val code = o.s("shortcode").ifBlank { return@mapNotNull null }
+                        val remote = o.s("telecommuting") == "true"
+                        val loc = listOf(o.s("city"), o.s("state"), o.s("country"), if (remote) "Remote" else "").filter { it.isNotBlank() }.distinct().joinToString(", ")
+                        val desc = html(o.s("description"))
+                        Job(
+                            key = "wk:${b.token}:$code", source = src, title = o.s("title").trim(), company = company, location = loc,
+                            url = o.s("url").ifBlank { "https://apply.workable.com/${b.token}/j/$code/" },
+                            applyUrl = o.s("application_url").ifBlank { "https://apply.workable.com/${b.token}/j/$code/apply/" },
+                            postedAt = o.s("published_on"), description = desc, detailsFetched = desc.isNotBlank(),
+                            criteria = listOf(o.s("employment_type"), o.s("department")).filter { it.isNotBlank() }.joinToString(" · "),
+                        )
+                    }
+                }
+                "teamtailor" -> {
+                    val doc = Jsoup.parse(Http.get("https://${b.token}.teamtailor.com/jobs.rss"), "", org.jsoup.parser.Parser.xmlParser())
+                    doc.select("item").mapNotNull { item ->
+                        fun t(tag: String) = item.getElementsByTag(tag).firstOrNull()?.text()?.trim().orEmpty()
+                        val link = t("link").ifBlank { return@mapNotNull null }
+                        val remote = t("remoteStatus").let { r -> r.isNotBlank() && !r.equals("none", true) }
+                        val loc = listOf(t("tt:city"), t("tt:country"), if (remote) "Remote" else "").filter { s -> s.isNotBlank() }.distinct().joinToString(", ")
+                        val desc = html(t("description"))
+                        Job(
+                            key = "tt:${b.token}:" + link.substringAfterLast("/jobs/").substringBefore("-").ifBlank { link.hashCode().toString() },
+                            source = src, title = t("title"), company = name, location = loc, url = link, applyUrl = link,
+                            postedAt = t("pubDate"), description = desc, detailsFetched = desc.isNotBlank(),
+                        )
+                    }
+                }
+                "breezy" -> {
+                    val arr = parse(Http.get("https://${b.token}.breezy.hr/json")) as? JsonArray ?: return emptyList()
+                    arr.objects().mapNotNull { o ->
+                        val url = o.s("url").ifBlank { return@mapNotNull null }
+                        val l = o.o("location")
+                        val remote = l?.s("is_remote") == "true"
+                        val loc = listOf(l?.s("city").orEmpty(), l?.s("state").orEmpty(), l?.o("country")?.s("name").orEmpty(), if (remote) "Remote" else "")
+                            .filter { it.isNotBlank() }.distinct().joinToString(", ").ifBlank { l?.s("name").orEmpty() }
+                        Job(
+                            key = "bz:${b.token}:" + o.s("id").ifBlank { url.substringAfterLast("/p/").substringBefore("-") }, source = src,
+                            title = o.s("name").trim(), company = o.o("company")?.s("name")?.ifBlank { null } ?: name, location = loc,
+                            url = url, applyUrl = url, postedAt = o.s("published_date"),
+                            criteria = listOf(o.o("type")?.s("name").orEmpty(), o.s("department")).filter { it.isNotBlank() }.joinToString(" · "),
+                        )
+                    }
+                }
+                "smartrecruiters" -> {
+                    val root = parse(Http.get("https://api.smartrecruiters.com/v1/companies/${enc(b.token)}/postings?limit=100&offset=0")) as? JsonObject ?: return emptyList()
+                    root.a("content").objects().mapNotNull { o ->
+                        val id = o.s("id").ifBlank { return@mapNotNull null }
+                        val l = o.o("location")
+                        val remote = l?.s("remote") == "true"
+                        val loc = (l?.s("fullLocation").orEmpty().ifBlank { listOf(l?.s("city").orEmpty(), l?.s("country").orEmpty()).filter { it.isNotBlank() }.joinToString(", ") }) +
+                            if (remote) ", Remote" else ""
+                        Job(
+                            key = "sr:${b.token}:$id", source = src, title = o.s("name").trim(),
+                            company = o.o("company")?.s("name")?.ifBlank { null } ?: name, location = loc.trim(',', ' '),
+                            url = "https://jobs.smartrecruiters.com/${b.token}/$id", applyUrl = "https://jobs.smartrecruiters.com/${b.token}/$id",
+                            postedAt = o.s("releasedDate"),
+                            criteria = listOf(o.o("typeOfEmployment")?.s("label").orEmpty(), o.o("department")?.s("label").orEmpty()).filter { it.isNotBlank() }.joinToString(" · "),
+                        )
+                    }
+                }
                 else -> emptyList()
             }
         } catch (e: HttpException) {
@@ -280,6 +367,11 @@ object Feeds {
             host.endsWith("cutshort.io") -> "Cutshort"
             host.endsWith("naukri.com") -> "Naukri"
             host.endsWith("indeed.com") || host.contains("indeed.") -> "Indeed"
+            host.endsWith("bamboohr.com") -> "BambooHR"
+            host.endsWith("workable.com") -> "Workable"
+            host.endsWith("teamtailor.com") -> "Teamtailor"
+            host.endsWith("breezy.hr") -> "Breezy"
+            host.endsWith("smartrecruiters.com") -> "SmartRecruiters"
             host.isBlank() -> "Web"
             else -> host
         }

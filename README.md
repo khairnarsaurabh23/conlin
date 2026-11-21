@@ -19,6 +19,23 @@ Approved items move to **Ready to send**. For LinkedIn, the app copies the text 
 
 Approved emails are sent from the app through Gmail (with an App Password), or opened one at a time in the Gmail app.
 
+## Paced queue (new in 3.0)
+
+Approve as many people as you like with **Add to queue**. JobPilot releases them one at a time: every 20 minutes (you choose, at least 15) between 10:00 and 19:00, it sends a notification for the next one, best first. Tap it and the profile opens with the note copied; you press Connect or Message. Nothing is sent without your tap, the daily and weekly caps still apply, and reminders stop while outreach is paused. The Send tab shows how many are queued and when the next one is due.
+
+Approved emails, which the app is allowed to send through Gmail, can drip out the same way, one every 30 minutes within those hours.
+
+## Ideas taken from career-ops
+
+- **Is it still open?** Kept jobs are rechecked every two days; postings that say "no longer accepting applications" or have gone are flagged and moved out of the Apply list.
+- **Knock-outs**: the posting asks for more years than you have, a Master's/PhD you don't list, existing work authorization or residence elsewhere, or a security clearance. Shown in red on the Apply card and lower the score.
+- **Reposts**: the same role at the same company relisted weeks later is flagged as possibly hard to fill or a ghost posting.
+- **Fact check** on AI-tailored resumes: numbers, employers, titles and skills that aren't in your real resume are listed before the PDF is made.
+- **Who you're writing to**: recruiters, hiring managers and peers get differently framed notes and referral asks (when your templates are left at the defaults).
+- **People you already know**: import LinkedIn's Connections.csv (Settings). Jobs at companies where you know someone say so, and *Ask who I know* adds them with a referral message ready.
+- **Follow-ups on applications**: a reminder 7 days after applying with no reply (with a drafted email if you applied by email), and a thank-you reminder after an interview.
+- **More careers pages**: BambooHR, Workable, Teamtailor, Breezy and SmartRecruiters, alongside Ashby, Lever and Greenhouse. Paste the careers link in Settings.
+
 ## Applying
 
 - **Apply list** (Inbox > Apply): every kept job you haven't applied to, with how to apply (company form, email or LinkedIn) and whether your resume is ready: *Ready to apply*, *Tailor first* (it shows the skills you have that your resume doesn't show), or *Weak fit*.

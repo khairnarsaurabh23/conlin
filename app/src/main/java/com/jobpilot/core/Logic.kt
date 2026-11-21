@@ -10,6 +10,7 @@ import com.jobpilot.data.JobStatus
 import com.jobpilot.data.Profile
 import com.jobpilot.data.ReplyKind
 import com.jobpilot.data.Stage
+import com.jobpilot.data.TailoredResume
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -122,7 +123,7 @@ object Rank {
 
     fun score(
         headline: String, degree: Int, kind: ContactKind, p: Profile, job: Job?, tag: String = "",
-        wroteHiringPost: Boolean = false, namedOnPosting: Boolean = false, openings: Int = 0,
+        wroteHiringPost: Boolean = false, namedOnPosting: Boolean = false, openings: Int = 0, known: Boolean = false,
     ): Result {
         val h = headline.lowercase()
         var s = 0
@@ -134,7 +135,9 @@ object Rank {
         val ex = p.pastCompanyList().firstOrNull { it.length > 2 && h.contains(it.lowercase()) }
         if (ex != null || tag == "colleague") { s += 30; why += "Worked at ${ex ?: "a company you did"}" }
         if (degree == 2) { s += 15; why += "2nd-degree connection" }
+        if (known) { s += 45; why += "You know them" }
         if (kind == ContactKind.RECRUITER && !namedOnPosting) { s += 20; why += "Recruiter" }
+        if (kind == ContactKind.MANAGER) { s += 18; why += "Hiring manager" }
         if (Regex("(?i)\\bhiring\\b").containsMatchIn(headline)) { s += 10; why += "Headline says hiring" }
         if (job != null) {
             val words = job.title.lowercase().split(Regex("[^a-z0-9+#.]+")).filter { it.length > 3 }
@@ -186,7 +189,7 @@ object Why {
     /** Scores at or above this count as a real match when describing a company's openings. */
     private const val GOOD = 40
 
-    private fun norm(company: String) = company.lowercase()
+    fun norm(company: String) = company.lowercase()
         .replace(Regex("\\b(pvt|private|ltd|limited|inc|llc|llp|corp|corporation|technologies|technology|solutions|india)\\b\\.?"), "")
         .replace(Regex("[^a-z0-9]+"), "")
 
@@ -214,6 +217,7 @@ object Why {
         val full = job?.company ?: c.company
         val company = shortName(full)
         val out = mutableListOf<String>()
+        if (c.known) out += "You already know them" + if (c.headline.isNotBlank()) " (${c.headline})" else ""
         if (c.postSnippet.isNotBlank()) out += "Posted about hiring: \"${c.postSnippet}\""
         if (c.source == "posting" && job != null) {
             val days = Matcher.daysSince(job.postedAt, System.currentTimeMillis())
@@ -231,7 +235,7 @@ object Why {
         } else if (open.isNotEmpty()) out += "$company has ${open.size} opening(s) in your searches, none a close match"
         val signal = out.isNotEmpty()
         if (c.degree == 1) out += "You are already connected"
-        if (c.why.isNotBlank()) c.why.split(" \u00b7 ").filter { it !in setOf("Posted about hiring", "Hiring contact", "Already connected", "Headline says hiring") }
+        if (c.why.isNotBlank()) c.why.split(" \u00b7 ").filter { it !in setOf("Posted about hiring", "Hiring contact", "Already connected", "Headline says hiring", "You know them") }
             .takeIf { it.isNotEmpty() }?.let { out += it.joinToString(", ") }
         if (!signal) out += if (company.isNotBlank()) "No hiring signal found. Suggested from your search of people at $company."
         else "No hiring signal found, and no company or job is linked yet."
@@ -240,7 +244,7 @@ object Why {
 
     /** True when there is concrete evidence (a post, a posting, or openings) behind the suggestion. */
     fun hasSignal(c: Contact, d: AppData): Boolean =
-        c.postSnippet.isNotBlank() || c.source == "posting" || openingsAt(d.jobs.firstOrNull { it.key == c.jobKey }?.company ?: c.company, d).isNotEmpty()
+        c.known || c.postSnippet.isNotBlank() || c.source == "posting" || openingsAt(d.jobs.firstOrNull { it.key == c.jobKey }?.company ?: c.company, d).isNotEmpty()
 
     /**
      * Opening clause for messages, e.g. "I saw your post about hiring for Android Developer at Acme".
@@ -255,6 +259,8 @@ object Why {
         return when {
             c.postSnippet.isNotBlank() && short -> "I saw your hiring post" + if (r.isNotBlank()) " for $r" else at
             c.postSnippet.isNotBlank() -> "I saw your post about hiring" + (if (r.isNotBlank()) " for $r" else "") + at
+            c.known && job != null -> if (short) "I saw $company is hiring for $r" else "Hope you're well. I saw $company is hiring for $r"
+            c.known -> "Hope you're well. I'm looking at roles at $company"
             c.source == "posting" && job != null -> if (short) "I saw you're the hiring contact for $r" else "I saw you're the hiring contact for the $r opening$at"
             job != null && short -> "I'm applying for $r$at"
             job != null && good > 1 -> "I noticed $company has $good openings in my field, including $r"
@@ -516,6 +522,8 @@ object Readiness {
         /** Asked for, and not in your profile at all. */
         val gaps: List<String>,
         val note: String = "",
+        /** Hard blockers in the posting, e.g. no sponsorship when you need it. */
+        val knockouts: List<String> = emptyList(),
     )
 
     fun via(job: Job): ApplyVia = when {
@@ -533,6 +541,10 @@ object Readiness {
             "ashbyhq" in u -> "Ashby form"
             "myworkdayjobs" in u || "workday" in u -> "Workday form"
             "smartrecruiters" in u -> "SmartRecruiters form"
+            "bamboohr" in u -> "BambooHR form"
+            "workable" in u -> "Workable form"
+            "teamtailor" in u -> "Teamtailor form"
+            "breezy.hr" in u -> "Breezy form"
             "wellfound" in u -> "Wellfound"
             "ycombinator" in u || "workatastartup" in u -> "YC Work at a Startup"
             "news.ycombinator" in u -> "See the HN post"
@@ -573,7 +585,7 @@ object Readiness {
             level == Level.TAILOR -> "Your resume shows only $coverage% of what this posting asks for."
             else -> "Your resume shows $coverage% of what this posting asks for."
         }
-        return Result(level, shown, unshown, gaps, note)
+        return Result(level, shown, unshown, gaps, note, Knockout.of(job, p))
     }
 }
 
@@ -630,5 +642,131 @@ object FormRules {
             yesNo(a.willingToRelocate)?.let { "relocat" to it },
             yesNo(a.workAuthorization)?.let { "(authori[sz]ed|eligible|legally).{0,40}work" to it },
         ) + p.answers.custom.mapNotNull { qa -> yesNo(qa.a)?.let { esc(qa.q) to it } }
+    }
+}
+
+
+/** Hard blockers in a posting: things that get an application rejected regardless of fit. */
+object Knockout {
+    private val DEGREE = Regex("(?i)(master'?s|\\bm\\.?s\\.?\\b|m\\.?tech|\\bmba\\b|ph\\.?d|doctorate)[^.\\n]{0,40}(required|mandatory|must)|(require[sd]?|must have)[^.\\n]{0,30}(master'?s|ph\\.?d|doctorate)")
+    private val HAS_DEGREE = Regex("(?i)master|m\\.?tech|\\bm\\.?s\\b|\\bmba\\b|ph\\.?d|doctorate|post ?graduate")
+    private val AUTH = Regex("(?i)must (already )?(be|have)[^.\\n]{0,25}(authori[sz]ed|eligible|right) to work in (the )?([a-z .]{2,30})")
+    private val RESIDE = Regex("(?i)(must|need to|required to) (be based|reside|live|be located) in (the )?([a-z ,]{2,40})")
+    private val CLEARANCE = Regex("(?i)(security|secret|government) clearance[^.\\n]{0,30}(required|must|needed)|must (hold|have|obtain)[^.\\n]{0,20}clearance")
+
+    fun of(job: Job, p: Profile): List<String> {
+        if (job.description.isBlank()) return emptyList()
+        val text = job.description
+        val home = Classify.homeWords(p.homeCountry)
+        val out = mutableListOf<String>()
+        val mine = p.yearsExperience.trim().toIntOrNull()
+        val need = Matcher.requiredYears(text)
+        if (mine != null && need != null && need > mine + 1) out += "Asks for $need+ years; you have $mine"
+        if (DEGREE.containsMatchIn(text) && !HAS_DEGREE.containsMatchIn(p.resumeText + " " + p.educationText + " " + p.college)) out += "Requires a Master's or PhD"
+        AUTH.find(text)?.let { m ->
+            val where = m.groupValues[5].trim().trimEnd('.', ',')
+            if (home.none { where.lowercase().contains(it) }) out += "Must already be authorized to work in ${where.replaceFirstChar(Char::uppercase)}"
+        }
+        RESIDE.find(text)?.let { m ->
+            val where = m.groupValues[4].trim().trimEnd('.', ',')
+            if (home.none { where.lowercase().contains(it) } && !where.contains("remote", true)) out += "Must live in ${where.replaceFirstChar(Char::uppercase)}"
+        }
+        if (CLEARANCE.containsMatchIn(text)) out += "Needs a security clearance"
+        if (p.answers.needsSponsorship.trim().lowercase().startsWith("yes") && "abroad" in job.tags &&
+            job.cautions.any { it.startsWith("Says no visa") }) out += "No visa sponsorship, and you need it"
+        return out.distinct()
+    }
+}
+
+/** Is a posting still open? Phrases from career-ops' liveness checks (MIT). */
+object Liveness {
+    private val CLOSED = listOf(
+        Regex("(?i)job (is )?no longer available"), Regex("(?i)job.{0,20}no longer open"),
+        Regex("(?i)this job has expired|job posting has expired"), Regex("(?i)no longer accepting applications"),
+        Regex("(?i)this (position|role|job) (is )?no longer"), Regex("(?i)this (?:job|role|position)(?: listing)? is closed\\b(?!-)"),
+        Regex("(?i)position has (already )?been filled"), Regex("(?i)applications?\\s+(?:(?:have|are|is)\\s+)?closed(?!\\s*\\?)"),
+        Regex("(?i)the job you(?:'re| are) (?:looking|searching) for (?:may |might )?(?:have |has )?(?:closed|expired|been removed)"),
+        Regex("(?i)(job|posting|page) not found"),
+    )
+
+    fun closed(pageText: String): Boolean = CLOSED.any { it.containsMatchIn(pageText.take(30000)) }
+}
+
+/** The paced queue: when the next approved LinkedIn send should be offered. */
+object Pacer {
+    data class Next(val contact: Contact?, val waitMs: Long, val reason: String)
+
+    fun inHours(p: Profile, now: Long): Boolean {
+        val h = java.util.Calendar.getInstance().apply { timeInMillis = now }.get(java.util.Calendar.HOUR_OF_DAY)
+        return if (p.paceStartHour <= p.paceEndHour) h in p.paceStartHour until p.paceEndHour else h >= p.paceStartHour || h < p.paceEndHour
+    }
+
+    fun queueSize(d: AppData) = queue(d).size
+
+    private fun queue(d: AppData): List<Contact> = d.contacts
+        .filter { it.stage == Stage.ASK_APPROVED || it.stage == Stage.APPROVED }
+        .sortedWith(compareByDescending<Contact> { it.stage == Stage.ASK_APPROVED }.thenByDescending { it.rank })
+
+    fun next(d: AppData, now: Long): Next {
+        val p = d.profile
+        val q = queue(d)
+        if (q.isEmpty()) return Next(null, 0, "Queue is empty")
+        if (!inHours(p, now)) return Next(null, 0, "Outside ${p.paceStartHour}:00 to ${p.paceEndHour}:00")
+        if (q.any { it.openedAt > 0 && now - it.openedAt < 30 * 60_000L }) return Next(null, 0, "Finish the one that's open first")
+        val gap = p.paceMinutes * 60_000L
+        val lastSend = d.actions.filter { it.kind != ActionKind.EMAIL }.maxOfOrNull { it.at } ?: 0L
+        val wait = maxOf(lastSend + gap, d.pace.lastNotifiedAt + gap) - now
+        if (wait > 0) return Next(null, wait, "Next in ${wait / 60_000 + 1} min")
+        val c = q.firstOrNull { c ->
+            when {
+                c.stage == Stage.APPROVED -> Guard.canInvite(d, now).ok
+                c.direct && c.degree != 1 && c.connectedAt == 0L -> Guard.canDirect(d, now).ok
+                else -> Guard.canMessage(d, now).ok
+            }
+        } ?: return Next(null, 0, Guard.canInvite(d, now).reason.ifBlank { "Limits reached for now" })
+        return Next(c, 0, "Ready")
+    }
+
+    fun status(d: AppData, now: Long): String {
+        val p = d.profile
+        if (!p.paceEnabled) return "Paced queue is off. Send from here whenever you like."
+        val n = next(d, now)
+        val count = queue(d).size
+        if (count == 0) return "Queue is empty. Approved requests wait here and are released one at a time."
+        return "$count in the queue, one every ${p.paceMinutes} min between ${p.paceStartHour}:00 and ${p.paceEndHour}:00. " +
+            when { n.contact != null -> "Next one is ready now."; else -> n.reason + "." }
+    }
+
+    fun emailDue(d: AppData, now: Long): Boolean {
+        val p = d.profile
+        return p.emailDrip && p.smtpConfigured && inHours(p, now) &&
+            d.emails.any { it.status == EmailStatus.APPROVED } &&
+            now - d.pace.lastEmailAt >= p.emailDripMinutes * 60_000L &&
+            Guard.emailsLeftToday(d, now) > 0
+    }
+}
+
+/** Claims in a tailored resume that the original resume doesn't support (career-ops' verify-cv-facts idea). */
+object FactCheck {
+    private val NUM = Regex("\\d[\\d,]*(\\.\\d+)?\\s*(%|\\+|x\\b|k\\b|m\\b|lpa|lakh|cr\\b|crore|million|billion)?", RegexOption.IGNORE_CASE)
+
+    private fun digits(s: String) = s.filter { it.isDigit() || it == '.' }.trimEnd('.')
+
+    fun unsupported(r: TailoredResume, p: Profile): List<String> {
+        val source = (p.resumeText + "\n" + p.experienceText + "\n" + p.educationText + "\n" + p.skills + "\n" + p.yearsExperience + "\n" + p.headline).lowercase()
+        if (source.isBlank()) return emptyList()
+        val sourceNums = NUM.findAll(source).map { digits(it.value) }.filter { it.isNotEmpty() }.toSet()
+        val out = mutableListOf<String>()
+        val texts = listOf(r.summary, r.headline) + r.experience.flatMap { it.bullets } + r.projects.flatMap { it.bullets } + r.other
+        for (t in texts) for (m in NUM.findAll(t)) {
+            val n = digits(m.value)
+            if (n.length >= 1 && n !in sourceNums && n.toDoubleOrNull()?.let { it > 1 } == true) out += "\"${m.value.trim()}\" in: ${t.take(80)}"
+        }
+        r.experience.forEach { e ->
+            if (e.company.isNotBlank() && !source.contains(e.company.lowercase().take(12))) out += "Employer \"${e.company}\" isn't in your resume"
+            if (e.title.isNotBlank() && !source.contains(e.title.lowercase().split(" ").filter { it.length > 3 }.firstOrNull() ?: e.title.lowercase())) out += "Title \"${e.title}\" isn't in your resume"
+        }
+        r.skills.filter { sk -> !source.contains(sk.lowercase()) }.take(6).forEach { out += "Skill \"$it\" isn't in your resume or skills" }
+        return out.distinct().take(12)
     }
 }

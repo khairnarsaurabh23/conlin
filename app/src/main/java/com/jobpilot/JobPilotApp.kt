@@ -4,6 +4,7 @@ import android.app.Application
 import com.jobpilot.core.JobRunner
 import com.jobpilot.data.Store
 import kotlinx.coroutines.runBlocking
+import com.jobpilot.work.PaceWorker
 import com.jobpilot.work.SearchWorker
 
 class JobPilotApp : Application() {
@@ -13,5 +14,6 @@ class JobPilotApp : Application() {
         // Upgrade stored data in place; nothing the user entered is dropped.
         runBlocking { Store.update { JobRunner.migrate(it) } }
         SearchWorker.schedule(this)
+        PaceWorker.schedule(this)
     }
 }

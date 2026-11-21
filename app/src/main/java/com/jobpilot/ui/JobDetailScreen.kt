@@ -60,7 +60,7 @@ fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHo
                     Btn("Keep", { vm.keepJob(job.key) })
                     Btn("Skip", { vm.skipJob(job.key); vm.openJob(null) })
                 }
-                if (!job.detailsFetched && job.key.startsWith("li:")) Btn("Load full details", { vm.fetchDetails(job.key) }, enabled = !busy)
+                if (!job.detailsFetched && (job.key.startsWith("li:") || job.url.isNotBlank())) Btn("Load full details", { vm.fetchDetails(job.key) }, enabled = !busy)
             }
 
             SectionTitle("Status")
@@ -77,6 +77,7 @@ fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHo
             val ready = Readiness.of(job, p)
             SectionTitle("Ready to apply?", trailing = ready.level.label)
             Muted(ready.note)
+            ready.knockouts.forEach { Mark("!", it, MaterialTheme.colorScheme.error, maxLines = 2) }
             if (ready.shown.isNotEmpty()) Mark("+", "Your resume shows: " + ready.shown.take(6).joinToString(", "), ok, maxLines = 2)
             if (ready.unshown.isNotEmpty()) Mark("-", "You have, but your resume doesn't show: " + ready.unshown.joinToString(", "), warn, maxLines = 3)
             if (ready.gaps.isNotEmpty()) Mark("-", "Posting also asks for: " + ready.gaps.take(6).joinToString(", "), MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
@@ -114,6 +115,15 @@ fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHo
                 }
                 if (job.description.isBlank()) Muted("Load the full details first.")
                 else if (p.aiConfigured && p.resumeText.isBlank()) Muted("Your resume text hasn't been read yet (Settings > About you). Until then the AI only has your profile fields.", color = warn)
+            }
+
+            val friends = com.jobpilot.core.JobRunner.connectionsAt(job.company, data)
+            if (friends.isNotEmpty()) {
+                SectionTitle("People you know there", trailing = "${friends.size}")
+                friends.take(5).forEach { k -> Mark("+", k.name + if (k.position.isNotBlank()) ", ${k.position}" else "", ok, maxLines = 1) }
+                if (friends.size > 5) Muted("And ${friends.size - 5} more.")
+                Muted("From your LinkedIn connections. A referral from someone who knows you goes furthest.")
+                ButtonRow { Btn("Ask them for a referral", { vm.askKnown(job) }, primary = true) }
             }
 
             SectionTitle("People", trailing = if (people.isEmpty()) "" else "${people.size}")
@@ -186,6 +196,11 @@ fun JobDetailScreen(vm: AppViewModel, data: AppData, job: Job, snack: SnackbarHo
                 if (r.gaps.isNotEmpty()) {
                     Label("the posting asks for, your resume doesn't show", Modifier.padding(top = 8.dp, bottom = 2.dp))
                     r.gaps.forEach { Mark("!", it, warn, maxLines = 4) }
+                }
+                val unsupported = remember(r) { com.jobpilot.core.FactCheck.unsupported(r, p) }
+                if (unsupported.isNotEmpty()) {
+                    Label("not found in your resume, check these", Modifier.padding(top = 8.dp, bottom = 2.dp), color = MaterialTheme.colorScheme.error)
+                    unsupported.forEach { Mark("!", it, MaterialTheme.colorScheme.error, maxLines = 3) }
                 }
                 Label("skills", Modifier.padding(top = 8.dp, bottom = 2.dp))
                 Text(r.skills.joinToString(", ").ifBlank { "None listed." }, style = MaterialTheme.typography.bodySmall)

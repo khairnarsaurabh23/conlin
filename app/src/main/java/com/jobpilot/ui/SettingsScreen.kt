@@ -36,6 +36,9 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
     val pickResume = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { vm.importResume(it) }
     }
+    val pickConnections = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { vm.importConnections(it) }
+    }
     // The resume file is saved separately, as soon as it is picked.
     val dirty = p.copy(resumeFileName = "", resumeText = "") != data.profile.copy(resumeFileName = "", resumeText = "")
     fun save() = vm.saveProfile(p.copy(resumeFileName = Store.data.profile.resumeFileName, resumeText = Store.data.profile.resumeText))
@@ -127,6 +130,36 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
             Muted("Direct messages are offered only for people you aren't connected to. Save them for those with a hiring post or on the posting. Members with an Open Profile can be messaged free; LinkedIn shows that on their profile.")
             NumField("Flag invites unanswered after N days", p.staleInviteDays) { p = p.copy(staleInviteDays = it.coerceIn(7, 60)) }
 
+            SectionTitle("Paced queue")
+            Toggle(
+                "Release approved requests one at a time", p.paceEnabled,
+                "Approve as many as you like; JobPilot notifies you when it's the next one's turn, so sends are spread through the day instead of in a burst. You still tap Connect or Send yourself.",
+            ) { p = p.copy(paceEnabled = it) }
+            if (p.paceEnabled) {
+                NumField("Minutes between requests (at least 15)", p.paceMinutes) { p = p.copy(paceMinutes = it.coerceIn(15, 240)) }
+                Row {
+                    NumField("From hour", p.paceStartHour, Modifier.weight(1f).padding(end = 6.dp)) { p = p.copy(paceStartHour = it.coerceIn(0, 23)) }
+                    NumField("Until hour", p.paceEndHour, Modifier.weight(1f).padding(start = 6.dp)) { p = p.copy(paceEndHour = it.coerceIn(1, 24)) }
+                }
+                Muted("Daily and weekly caps above still apply. Reminders stop while outreach is paused.")
+            }
+            Toggle(
+                "Send approved emails slowly", p.emailDrip,
+                "Approved emails go out by themselves, one at a time, within the hours above. Needs the Gmail App Password. Send now still sends them all at once.",
+            ) { p = p.copy(emailDrip = it) }
+            if (p.emailDrip) NumField("Minutes between emails", p.emailDripMinutes) { p = p.copy(emailDripMinutes = it.coerceIn(15, 240)) }
+
+            SectionTitle("People you already know")
+            Muted(
+                if (data.connections.isEmpty()) "Import your LinkedIn connections and jobs at companies where you know someone are flagged, with a referral message ready. On LinkedIn: Settings > Data privacy > Get a copy of your data > Connections. The email arrives in about 10 minutes; pick Connections.csv from the download."
+                else "${data.connections.size} connections imported " + java.text.DateFormat.getDateInstance().format(java.util.Date(data.connectionsImportedAt)) + ". Import again to refresh."
+            )
+            ButtonRow {
+                Btn(if (data.connections.isEmpty()) "Import Connections.csv" else "Import again", { pickConnections.launch(arrayOf("text/*", "application/octet-stream", "*/*")) })
+                Quiet("Open LinkedIn export", { vm.openUrl("https://www.linkedin.com/mypreferences/d/download-my-data") })
+            }
+            NumField("Remind me to follow up on an application after N days", p.appFollowDays) { p = p.copy(appFollowDays = it.coerceIn(3, 30)) }
+
             SectionTitle("Messages")
             Field("Connection note. Leave empty to send plain requests", p.noteTemplateA, lines = 3) { p = p.copy(noteTemplateA = it) }
             Field("Second version to compare (optional)", p.noteTemplateB, lines = 3) { p = p.copy(noteTemplateB = it) }
@@ -192,8 +225,8 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
             Toggle("Hacker News: Who is hiring", p.useHackerNews, "Monthly thread of mostly startup jobs, many remote or with visa support. Posts often include an email to apply.") { p = p.copy(useHackerNews = it) }
             Toggle("Remotive", p.useRemotive, "Remote jobs. Checked at most every 6 hours, as Remotive asks.") { p = p.copy(useRemotive = it) }
             Toggle("Arbeitnow", p.useArbeitnow, "Jobs in Europe, mostly Germany, many in English and with visa sponsorship.") { p = p.copy(useArbeitnow = it) }
-            Field("Startup careers pages, one per line", p.startupBoards, lines = 3) { p = p.copy(startupBoards = it) }
-            Muted("Paste careers links from jobs.ashbyhq.com, jobs.lever.co or boards.greenhouse.io. Many YC and Wellfound startups host their jobs there, and new openings show up here automatically.")
+            Field("Company careers pages, one per line", p.startupBoards, lines = 3) { p = p.copy(startupBoards = it) }
+            Muted("Paste careers links from Ashby, Lever, Greenhouse, BambooHR, Workable, Teamtailor, Breezy or SmartRecruiters, e.g. turium.bamboohr.com/careers. Many YC and Wellfound startups host their jobs there, and new openings show up here automatically.")
             Muted(
                 "Wellfound and YC's job board have no open feed. Open them from the Browse tab and tap Save this job, or share a job link to JobPilot from any app.",
                 Modifier.padding(top = 6.dp),

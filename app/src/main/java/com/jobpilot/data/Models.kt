@@ -70,6 +70,17 @@ data class Profile(
     /** Premium: InMail credits come back when the person replies within 90 days. */
     val premium: Boolean = false,
 
+    // Paced queue: approved LinkedIn sends are released one at a time, as reminders.
+    val paceEnabled: Boolean = true,
+    val paceMinutes: Int = 20,
+    val paceStartHour: Int = 10,
+    val paceEndHour: Int = 19,
+    /** Approved emails go out by themselves, one every [emailDripMinutes], within the same hours. */
+    val emailDrip: Boolean = true,
+    val emailDripMinutes: Int = 30,
+    /** Remind to follow up on an application after this many days without a reply. */
+    val appFollowDays: Int = 7,
+
     // Background checks
     val autoCheckEnabled: Boolean = true,
     val autoCheckHours: Int = 12,
@@ -116,6 +127,21 @@ data class Profile(
             "Hi {firstName}, thanks for connecting. {opening}. I'm applying, and I have {years} of experience with " +
                 "{topSkills}. If it looks like a reasonable fit, would you be open " +
                 "to referring me or pointing me to the right person? I can send my resume. Thanks either way.\n{myName}"
+
+        // Framing by who you're writing to, used while the templates above are left at their defaults.
+        const val NOTE_RECRUITER =
+            "Hi {firstName}, {opening}. I have {experience} with {topSkills}. Could I share my resume with you for this role?"
+        const val NOTE_MANAGER =
+            "Hi {firstName}, {opening}. I have {experience} with {topSkills} and would value a quick word about what the team is building."
+        const val ASK_RECRUITER =
+            "Hi {firstName}, thanks for connecting. {opening}. I have {experience} with {topSkills}. Could you pass my profile to the hiring team, " +
+                "or tell me the best way to apply? I can send my resume. Thanks.\n{myName}"
+        const val ASK_MANAGER =
+            "Hi {firstName}, thanks for connecting. {opening}. I've worked on {topSkills} for {experience}, which looks close to what your team needs. " +
+                "If you think I'd fit, a referral or a word with the recruiter would mean a lot. Happy to send my resume.\n{myName}"
+        const val ASK_KNOWN =
+            "Hi {firstName}, {opening}. I'm applying, and I have {experience} with {topSkills}. Would you be comfortable referring me, " +
+                "or pointing me to the right person? I can send my resume and the job link. Thanks a lot.\n{myName}"
 
         /** Defaults shipped in 2.0, recognised so untouched templates can be upgraded. */
         const val OLD_NOTE =
@@ -220,6 +246,17 @@ data class Job(
     val appliedAt: Long = 0,
     /** The application page was opened; waiting for the user to say whether they applied. */
     val applyOpenedAt: Long = 0,
+    /** The posting was found closed ("no longer accepting applications", or gone). */
+    val closed: Boolean = false,
+    /** Last time the posting was checked to still be open. */
+    val checkedAt: Long = 0,
+    /** Times the same role was listed again later (a possible ghost posting). */
+    val repostCount: Int = 0,
+    val lastSeenAt: Long = 0,
+    /** Set when the job moves to Interview, for the thank-you reminder. */
+    val interviewAt: Long = 0,
+    val followedUpAt: Long = 0,
+    val thankedAt: Long = 0,
 )
 
 @Serializable
@@ -285,7 +322,7 @@ data class TailoredResume(
 
 @Serializable
 enum class ContactKind(val label: String) {
-    RECRUITER("Recruiter"), EMPLOYEE("Employee"), OTHER("Other")
+    RECRUITER("Recruiter"), EMPLOYEE("Peer"), OTHER("Other"), MANAGER("Hiring manager")
 }
 
 /**
@@ -337,6 +374,8 @@ data class Contact(
     val edited: Boolean = false,
     /** Messaged without connecting first (InMail or Open Profile). */
     val direct: Boolean = false,
+    /** Someone you already know (from your LinkedIn connections export). */
+    val known: Boolean = false,
 )
 
 @Serializable
@@ -428,4 +467,25 @@ data class AppData(
     val schema: Int = 0,
     /** When each rate-limited source was last fetched (epoch ms). */
     val sourceRuns: Map<String, Long> = emptyMap(),
+    /** Imported from LinkedIn's Connections.csv: people you already know. */
+    val connections: List<Connection> = emptyList(),
+    val connectionsImportedAt: Long = 0,
+    val pace: PaceState = PaceState(),
+)
+
+@Serializable
+data class Connection(
+    val name: String,
+    val url: String = "",
+    val company: String = "",
+    val position: String = "",
+    val connectedOn: String = "",
+    val email: String = "",
+)
+
+@Serializable
+data class PaceState(
+    val lastNotifiedAt: Long = 0,
+    val lastNotifiedId: String = "",
+    val lastEmailAt: Long = 0,
 )

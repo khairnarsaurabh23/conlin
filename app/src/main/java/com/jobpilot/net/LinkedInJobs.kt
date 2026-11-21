@@ -17,6 +17,7 @@ data class JobDetails(
     val description: String,
     val criteria: String,
     val poster: Poster?,
+    val closed: Boolean = false,
 )
 
 /**
@@ -119,7 +120,8 @@ object LinkedInJobs {
             val headline = b.selectFirst(".base-main-card__subtitle, h4")?.text()?.trim().orEmpty()
             if (name.isBlank() || url.isBlank()) null else Poster(name, headline, url)
         }
-        return JobDetails(description, criteria, poster)
+        val closed = doc.selectFirst(".closed-job") != null || com.jobpilot.core.Liveness.closed(doc.text())
+        return JobDetails(description, criteria, poster, closed)
     }
 
     fun htmlToText(html: String): String {

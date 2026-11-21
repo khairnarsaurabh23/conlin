@@ -123,6 +123,24 @@ object Mailer {
         }
     }
 
+    /** Sends the oldest approved email, for the paced drip. Returns true when one went out. */
+    suspend fun sendNext(): Boolean {
+        val p = Store.data.profile
+        if (!p.smtpConfigured || Guard.emailsLeftToday(Store.data, System.currentTimeMillis()) <= 0) return false
+        val lead = Store.data.emails.filter { it.status == EmailStatus.APPROVED && it.error.isBlank() }.minByOrNull { it.createdAt } ?: return false
+        return try {
+            sendSmtp(lead, p, Store.resumeFor(lead.jobKey))
+            markSent(lead, "SMTP")
+            true
+        } catch (e: Exception) {
+            val msg = e.message ?: e.javaClass.simpleName
+            Store.updateEmail(lead.id) {
+                if (isLoginError(msg)) it.copy(error = LOGIN_HELP) else it.copy(status = EmailStatus.FAILED, error = msg)
+            }
+            false
+        }
+    }
+
     /**
      * Sends every APPROVED email via SMTP, respecting the daily cap and spacing sends out.
      * Returns a human-readable summary.

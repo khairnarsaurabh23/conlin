@@ -13,8 +13,8 @@ android {
         applicationId = "com.jobpilot"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "2.6"
+        versionCode = 10
+        versionName = "3.0"
     }
 
     signingConfigs {

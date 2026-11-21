@@ -73,6 +73,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(i: Intent?) {
+        i?.getStringExtra(com.jobpilot.work.PaceWorker.EXTRA_CONTACT)?.let { id ->
+            i?.removeExtra(com.jobpilot.work.PaceWorker.EXTRA_CONTACT)
+            vm.openQueued(id)
+            return
+        }
         if (i?.action == Intent.ACTION_SEND && i.type?.startsWith("text/") == true) {
             val text = listOfNotNull(i.getStringExtra(Intent.EXTRA_SUBJECT), i.getStringExtra(Intent.EXTRA_TEXT))
                 .joinToString("\n")

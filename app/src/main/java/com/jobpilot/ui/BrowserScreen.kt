@@ -49,6 +49,7 @@ import kotlinx.serialization.json.addJsonArray
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.put
 import com.jobpilot.MainActivity
 import com.jobpilot.core.Emails
 import com.jobpilot.core.JobRunner
@@ -175,7 +176,7 @@ private const val FILL_JS = """
      el.selectedIndex=pick; el.dispatchEvent(new Event('change',{bubbles:true})); filled++;
    } else { jpSet(el,v); filled++; }
  }
- var groups={}, rs=document.querySelectorAll('input[type=radio]');
+ var groups={}, rs=A.noRadio?[]:document.querySelectorAll('input[type=radio]');
  for(var i=0;i<rs.length;i++){ var n=rs[i].name; if(n){ (groups[n]=groups[n]||[]).push(rs[i]); } }
  for(var n in groups){
    var g=groups[n]; if(g.some(function(x){return x.checked;})) continue;
@@ -219,7 +220,9 @@ private const val APPLIED_JS = """
  return /thank(s| you)[^.]{0,40}(for applying|for your application)|application (has been |was )?(received|submitted|sent)|we('ve| have) received your application|successfully (applied|submitted)|your application is (in|complete)/.test(t)?'1':''; })()
 """
 
-private fun fillArgs(p: com.jobpilot.data.Profile): String = buildJsonObject {
+// Lever re-renders on radio clicks and can lose typed answers, so radios are left to you there.
+private fun fillArgs(p: com.jobpilot.data.Profile, url: String = ""): String = buildJsonObject {
+    put("noRadio", url.contains("lever.co"))
     putJsonArray("rules") { FormRules.text(p).forEach { (r, v) -> addJsonArray { add(r); add(v) } } }
     putJsonArray("yesno") { FormRules.yesNo(p).forEach { (r, v) -> addJsonArray { add(r); add(v) } } }
 }.toString()
@@ -351,7 +354,7 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView, pickFile: (
     }
 
     fun runFill(quiet: Boolean) {
-        webView.evaluateJavascript(JS_HELPERS + FILL_JS + "(" + fillArgs(Store.data.profile) + ")") { raw ->
+        webView.evaluateJavascript(JS_HELPERS + FILL_JS + "(" + fillArgs(Store.data.profile, webView.url.orEmpty()) + ")") { raw ->
             val o = decodeJsResult(raw)?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() } ?: return@evaluateJavascript
             val filled = o["filled"]?.jsonPrimitive?.intOrNull ?: 0
             val missing = (o["missing"] as? JsonArray).orEmpty().mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }

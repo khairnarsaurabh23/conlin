@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jobpilot.core.Guard
+import com.jobpilot.core.Pacer
 import com.jobpilot.core.JobRunner
 import com.jobpilot.core.ApplyVia
 import com.jobpilot.core.Readiness
@@ -66,6 +67,8 @@ private sealed class Card(val key: String) {
     class More(val text: String, val id: String) : Card("more-$id")
     class ApplyHead(val ready: List<Job>, val tailor: Int, val manual: Int) : Card("apply-head")
     class Apply(val job: Job, val r: Readiness.Result, val via: ApplyVia) : Card("apply-${job.key}")
+    class Closed(val jobs: List<Job>) : Card("closed")
+    class AppFollow(val job: Job, val thanks: Boolean, val byEmail: Boolean) : Card("follow-${job.key}-$thanks")
 }
 
 /** The inbox is split by kind of decision, so each list is one sort of thing. */
@@ -134,7 +137,9 @@ private fun buildCards(d: AppData, now: Long): Map<InboxTab, List<Card>> {
     val emails = d.emails.filter { it.status == EmailStatus.DRAFT }.sortedByDescending { it.createdAt }.map { Card.Email(it) }
 
     // apply: kept jobs not applied to yet, with how to apply and whether the resume is ready
-    val toApply = d.jobs.filter { (it.status == JobStatus.SAVED || it.status == JobStatus.REFERRAL_ASKED) && it.appliedAt == 0L }
+    val kept = d.jobs.filter { (it.status == JobStatus.SAVED || it.status == JobStatus.REFERRAL_ASKED) && it.appliedAt == 0L }
+    val closed = kept.filter { it.closed }
+    val toApply = kept.filter { !it.closed }
         .map { Card.Apply(it, Readiness.of(it, p), Readiness.via(it)) }
         .sortedWith(compareBy<Card.Apply> { it.r.level.ordinal }.thenByDescending { it.job.matchScore })
     val apply = if (toApply.isEmpty()) emptyList() else listOf<Card>(
@@ -144,9 +149,19 @@ private fun buildCards(d: AppData, now: Long): Map<InboxTab, List<Card>> {
             toApply.count { it.via == ApplyVia.LINKEDIN },
         )
     ) + toApply
+    val follow = mutableListOf<Card>()
+    val mailed = d.emails.filter { it.sentAt > 0 }.map { it.jobKey }.toSet()
+    val dayMs = TimeUnit.DAYS.toMillis(1)
+    d.jobs.filter {
+        it.status == JobStatus.APPLIED && it.appliedAt > 0 && it.followedUpAt == 0L &&
+            now - it.appliedAt > p.appFollowDays * dayMs && now - it.appliedAt < 45 * dayMs
+    }.sortedByDescending { it.matchScore }.take(5).forEach { follow += Card.AppFollow(it, false, it.key in mailed) }
+    d.jobs.filter { it.status == JobStatus.INTERVIEW && it.interviewAt > 0 && it.thankedAt == 0L && now - it.interviewAt < 4 * dayMs }
+        .forEach { follow += Card.AppFollow(it, true, it.key in mailed) }
+    val applyAll = follow + apply + if (closed.isNotEmpty()) listOf(Card.Closed(closed)) else emptyList()
 
     return mapOf(
-        InboxTab.SEND to send, InboxTab.APPLY to apply, InboxTab.JOBS to jobCards, InboxTab.REFERRALS to referrals,
+        InboxTab.SEND to send, InboxTab.APPLY to applyAll, InboxTab.JOBS to jobCards, InboxTab.REFERRALS to referrals,
         InboxTab.NETWORK to network, InboxTab.EMAILS to emails,
     )
 }
@@ -202,10 +217,13 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                     key = { "confirm-${it.id}" },
                 ) { c -> Column(Modifier.animateItem().padding(bottom = 10.dp)) { SendPersonCard(vm, data, c, jobsByKey[c.jobKey], now) } }
             } else if (cards.isNotEmpty()) item(key = "send-hint") {
-                Muted(
-                    "LinkedIn doesn't let apps send for you, so each one takes a tap: JobPilot copies the text and opens the profile, you press Connect or Message and paste, then confirm here.",
-                    Modifier.padding(start = 4.dp, end = 4.dp, bottom = 12.dp),
-                )
+                Column(Modifier.padding(start = 4.dp, end = 4.dp, bottom = 12.dp)) {
+                    if (data.contacts.any { it.stage == Stage.APPROVED || it.stage == Stage.ASK_APPROVED }) {
+                        Text(Pacer.status(data, now), style = MaterialTheme.typography.bodyMedium)
+                        Gap(4)
+                    }
+                    Muted("LinkedIn doesn't let apps send for you, so each one takes a tap: JobPilot copies the text and opens the profile, you press Connect or Message and paste. It notices when it's sent.")
+                }
             }
             if (tab == InboxTab.JOBS && newJobs.isNotEmpty()) item(key = "cats") {
                 CatFilter(newJobs, cat, data.profile.homeCountry, Modifier.padding(bottom = 6.dp)) { cat = it }
@@ -218,7 +236,10 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                         is Card.SendEmails -> Panel {
                             Label("emails, approved")
                             Text("${card.count} ready to go", style = MaterialTheme.typography.titleSmall)
-                            Muted("Sent from ${data.profile.smtpUser}, a few seconds apart. ${Guard.emailsLeftToday(data, now)} left today.")
+                            Muted(
+                                if (data.profile.emailDrip) "Going out from ${data.profile.smtpUser} one every ${data.profile.emailDripMinutes} min, ${data.profile.paceStartHour}:00 to ${data.profile.paceEndHour}:00. ${Guard.emailsLeftToday(data, now)} left today."
+                                else "Sent from ${data.profile.smtpUser}, a few seconds apart. ${Guard.emailsLeftToday(data, now)} left today."
+                            )
                             ButtonRow { Btn("Send now", { vm.sendApprovedSmtp() }, primary = true, enabled = !busy) }
                         }
                         is Card.SendEmail -> SendEmailCard(vm, card.e) { editEmail = card.e }
@@ -232,7 +253,7 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                         }
                         is Card.Ask -> PersonCard(vm, data, card.c, card.job, "referral ask", "Connected. Ask for a referral?", card.c.ask) {
                             Btn("Send message", { vm.approveAndSend(card.c) }, primary = true)
-                            Quiet("Later", { vm.approveAsk(card.c.id) })
+                            Quiet("Add to queue", { vm.addToQueue(card.c) })
                             Quiet(if (data.profile.aiConfigured) "Edit / AI" else "Edit", { editPerson = card.c })
                             Quiet("Skip", { vm.skipContact(card.c.id) })
                         }
@@ -243,7 +264,7 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                             Btn("Send request", { vm.approveAndSend(card.c) }, primary = true)
                             val left = Guard.directLeft(data, now)
                             if (left > 0 && card.c.degree != 1) Quiet("Message directly ($left left)", { vm.messageDirectly(card.c) })
-                            Quiet("Later", { vm.approveInvite(card.c.id) })
+                            Quiet("Add to queue", { vm.addToQueue(card.c) })
                             Quiet(if (data.profile.aiConfigured) "Edit / AI" else "Edit", { editPerson = card.c })
                             Quiet("Skip", { vm.skipContact(card.c.id) })
                         }
@@ -271,6 +292,7 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                         is Card.NewJob -> JobCard(card.job, data.profile.homeCountry, onOpen = { vm.openJob(card.job.key) },
                             onKeep = { vm.keepJob(card.job.key) }, onSkip = { vm.skipJob(card.job.key) },
                             onPeople = { vm.findPeople(card.job) },
+                            friends = JobRunner.connectionsAt(card.job.company, data).size, onFriends = { vm.askKnown(card.job) },
                             known = data.contacts.count { it.stage != Stage.SKIPPED && (it.jobKey == card.job.key || (it.company.isNotBlank() && it.company.equals(card.job.company, true))) })
                         is Card.ApplyHead -> Panel {
                             Label("Applications")
@@ -289,6 +311,30 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                             }
                         }
                         is Card.Apply -> ApplyCard(vm, data, card.job, card.r, card.via, onEmail = { editEmail = it })
+                        is Card.Closed -> Panel {
+                            Label("no longer open")
+                            Text("${card.jobs.size} kept job(s) stopped taking applications", style = MaterialTheme.typography.titleSmall)
+                            card.jobs.take(4).forEach { Muted("${it.title}, ${it.company}", maxLines = 1) }
+                            ButtonRow {
+                                Btn("Clear them", { vm.dropClosed(card.jobs.map { it.key }) }, primary = true)
+                                Quiet("Open first", { vm.openJob(card.jobs.first().key) })
+                            }
+                        }
+                        is Card.AppFollow -> Panel {
+                            Label(if (card.thanks) "after the interview" else "follow-up")
+                            Text("${card.job.title} at ${card.job.company}", style = MaterialTheme.typography.titleSmall, maxLines = 2)
+                            Muted(
+                                if (card.thanks) "Send a short thank-you within a day of the interview."
+                                else "Applied ${TimeUnit.MILLISECONDS.toDays(now - card.job.appliedAt)} days ago with no reply. One polite check-in is normal."
+                            )
+                            ButtonRow {
+                                if (card.byEmail) Btn(if (card.thanks) "Write thank-you" else "Draft follow-up", {
+                                    vm.followUpEmail(card.job, card.thanks) { editEmail = it }
+                                }, primary = true)
+                                else Btn("People to ask", { vm.findPeople(card.job) }, primary = true)
+                                Quiet("Done", { vm.dismissFollowUp(card.job, card.thanks) })
+                            }
+                        }
                         is Card.More -> Row(verticalAlignment = Alignment.CenterVertically) {
                             Muted(card.text, Modifier.weight(1f))
                             if (card.id == "jobs") Quiet("Skip those", { vm.skipWeakJobs(data.profile.minMatch) })
@@ -470,7 +516,7 @@ private fun EmailCard(e: EmailLead, onApprove: () -> Unit, onEdit: () -> Unit, o
 @Composable
 private fun JobCard(
     job: Job, home: String, onOpen: () -> Unit, onKeep: () -> Unit, onSkip: () -> Unit,
-    onPeople: () -> Unit = {}, known: Int = 0,
+    onPeople: () -> Unit = {}, known: Int = 0, friends: Int = 0, onFriends: () -> Unit = {},
 ) {
     Panel(onClick = onOpen) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -486,8 +532,10 @@ private fun JobCard(
             job.cautions.take(3).forEach { Mark("-", it, warn, maxLines = 2) }
         }
         if (known > 0) Muted("$known ${if (known == 1) "person" else "people"} at ${job.company} already in your referrals", Modifier.padding(top = 6.dp), color = ok)
+        if (friends > 0) Muted("You know $friends ${if (friends == 1) "person" else "people"} at ${job.company}", Modifier.padding(top = 6.dp), color = ok)
         ButtonRow {
             Btn("Keep", onKeep, primary = true)
+            if (friends > 0) Btn("Ask who I know", onFriends)
             Btn("People to ask", { onKeep(); onPeople() })
             Quiet("Skip", onSkip)
             Quiet("Details", onOpen)
@@ -514,6 +562,7 @@ private fun ApplyCard(vm: AppViewModel, data: AppData, job: Job, r: Readiness.Re
             )
         }
         Muted(r.note, Modifier.padding(top = 4.dp))
+        r.knockouts.forEach { Mark("!", it, MaterialTheme.colorScheme.error, maxLines = 2) }
         if (r.unshown.isNotEmpty()) Mark("-", "You have, but your resume doesn't show: " + r.unshown.take(5).joinToString(", "), warn, maxLines = 2)
         if (r.gaps.isNotEmpty()) Mark("-", "Posting also asks for: " + r.gaps.take(5).joinToString(", "), MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
 

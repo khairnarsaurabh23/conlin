@@ -3,6 +3,7 @@ package com.jobpilot.core
 import com.jobpilot.data.AppData
 import com.jobpilot.data.Contact
 import com.jobpilot.data.ContactKind
+import com.jobpilot.data.Connection
 import com.jobpilot.data.EmailLead
 import com.jobpilot.data.EmailStatus
 import com.jobpilot.data.Job
@@ -18,6 +19,8 @@ import com.jobpilot.net.LinkedInJobs
 import kotlinx.coroutines.delay
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
+
+private const val DAY = 86_400_000L
 
 /** Runs the saved searches, stores new jobs, enriches them and proposes outreach for approval. */
 object JobRunner {
@@ -93,12 +96,32 @@ object JobRunner {
         // 2. Merge new jobs (dedupe by key and by title+company across sources)
         val existing = Store.data.jobs
         val keys = existing.map { it.key }.toHashSet()
-        val sigs = existing.map { sig(it) }.toHashSet()
+        val bySig = existing.associateBy { sig(it) }
+        val sigs = bySig.keys.toHashSet()
         val newJobs = mutableListOf<Job>()
+        val seenAgain = HashMap<String, Boolean>() // existing key -> listed again under a new id (repost)
+        val now0 = System.currentTimeMillis()
         for (j in filtered) {
-            if (j.key in keys || sig(j) in sigs) continue
+            if (j.key in keys) { seenAgain.putIfAbsent(j.key, false); continue }
+            val old = bySig[sig(j)]
+            if (old != null) {
+                // Same title at the same company under a new listing, weeks later: a repost.
+                if (now0 - old.foundAt > 21 * DAY && now0 - old.lastSeenAt > 7 * DAY) seenAgain[old.key] = true
+                else seenAgain.putIfAbsent(old.key, false)
+                continue
+            }
+            if (sig(j) in sigs) continue
             keys += j.key; sigs += sig(j)
             newJobs += j
+        }
+        if (seenAgain.isNotEmpty()) Store.update { d ->
+            d.copy(jobs = d.jobs.map { e ->
+                when (seenAgain[e.key]) {
+                    true -> e.copy(repostCount = e.repostCount + 1, lastSeenAt = now0)
+                    false -> e.copy(lastSeenAt = now0)
+                    null -> e
+                }
+            })
         }
         val kwById = searches.associate { it.id to it.keywords }
         val prefs = TitlePrefs.of(existing)
@@ -117,6 +140,19 @@ object JobRunner {
             enrich(j.key, errors)
             delay(1500L + Random.nextLong(1000))
         }
+
+        // 3b. Kept jobs: check the postings are still open, a few per check.
+        val stale = Store.data.jobs.filter {
+            (it.status == JobStatus.SAVED || it.status == JobStatus.REFERRAL_ASKED) && it.appliedAt == 0L && !it.closed &&
+                System.currentTimeMillis() - it.checkedAt > 2 * DAY
+        }.sortedByDescending { it.matchScore }.take(12)
+        var closedNow = 0
+        for (j in stale) {
+            onProgress("Checking ${j.title} is still open")
+            if (checkOpen(j.key) == false) closedNow++
+            delay(800)
+        }
+        if (closedNow > 0) errors += "$closedNow kept job(s) are no longer open"
 
         // 4. Turn emails in descriptions into drafts for approval
         val keysNew = scoredNew.map { it.key }.toSet()
@@ -156,10 +192,18 @@ object JobRunner {
 
     fun rescore(j: Job, p: Profile, keywords: String, prefs: TitlePrefs = TitlePrefs.NONE): Job {
         val r = Matcher.score(j, p, keywords, prefs)
-        val c = Classify.of(j, p.homeCountry)
+        val c0 = Classify.of(j, p.homeCountry)
+        val ko = Knockout.of(j.copy(tags = c0.tags, cautions = c0.cautions), p)
+        val extra = buildList {
+            ko.forEach { add("Knock-out: $it") }
+            if (j.repostCount > 0) add("Listed again ${j.repostCount} time(s) since it was first seen; may be hard to fill or a ghost posting")
+            if (j.closed) add("This posting looks closed")
+        }
+        val c = c0.copy(cautions = c0.cautions + extra, tags = c0.tags + if (j.closed) listOf("closed") else emptyList())
         var score = r.score
         if ("remote-elsewhere" in c.tags) score -= 8
         if (c.cautions.any { it.startsWith("Says no visa") }) score -= 6
+        score -= 10 * ko.size
         val mails = if (j.description.isNotBlank()) Emails.extract(j.description).map { it.email } else j.emailsFound
         return j.copy(
             matchScore = score.coerceIn(0, 100), matchedSkills = r.matched, missingSkills = r.missing, emailsFound = mails,
@@ -198,9 +242,40 @@ object JobRunner {
     }
 
     /** Fetch the public job page for one LinkedIn job; also captures the recruiter if shown. */
+    /**
+     * Fetches the posting and records whether it is still open. Returns false when closed,
+     * true when open, null when it couldn't be read. Fills in a missing description on the way.
+     */
+    suspend fun checkOpen(jobKey: String): Boolean? {
+        val job = Store.data.jobs.firstOrNull { it.key == jobKey } ?: return null
+        val now = System.currentTimeMillis()
+        val url = if (job.key.startsWith("li:")) "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/${LinkedInJobs.idFromKey(job.key)}" else job.url
+        if (url.isBlank()) return null
+        val text = try {
+            org.jsoup.Jsoup.parse(Http.get(url)).text()
+        } catch (e: com.jobpilot.net.HttpException) {
+            if (e.code == 404 || e.code == 410) "job not found" else return null
+        } catch (e: Exception) {
+            return null
+        }
+        val closed = Liveness.closed(text)
+        val p = Store.data.profile
+        val kw = Store.data.searches.firstOrNull { it.id == job.searchId }?.keywords ?: defaultRole(Store.data)
+        val prefs = TitlePrefs.of(Store.data.jobs)
+        Store.updateJob(jobKey) {
+            val desc = if (it.description.isBlank() && !closed && text.length > 400) text.take(10000) else it.description
+            rescore(it.copy(closed = closed, checkedAt = now, description = desc, detailsFetched = it.detailsFetched || desc.isNotBlank()), p, kw, prefs)
+        }
+        return !closed
+    }
+
     suspend fun enrich(jobKey: String, errors: MutableList<String> = mutableListOf()): Boolean {
         val job = Store.data.jobs.firstOrNull { it.key == jobKey } ?: return false
-        if (!job.key.startsWith("li:")) return true
+        if (!job.key.startsWith("li:")) {
+            // Other sources: read the posting page itself when the feed had no description.
+            if (job.description.isBlank()) checkOpen(jobKey) ?: run { errors += "Couldn't read ${job.title}"; return false }
+            return true
+        }
         val det = try {
             LinkedInJobs.details(LinkedInJobs.idFromKey(job.key))
         } catch (e: Exception) {
@@ -210,7 +285,7 @@ object JobRunner {
         val profile = Store.data.profile
         val kw = Store.data.searches.firstOrNull { it.id == job.searchId }?.keywords.orEmpty()
         val prefs = TitlePrefs.of(Store.data.jobs)
-        Store.updateJob(job.key) { rescore(it.copy(description = det.description, criteria = det.criteria, detailsFetched = true), profile, kw, prefs) }
+        Store.updateJob(job.key) { rescore(it.copy(description = det.description, criteria = det.criteria, detailsFetched = true, closed = det.closed, checkedAt = System.currentTimeMillis()), profile, kw, prefs) }
         det.poster?.let { p ->
             val fresh = Store.data.jobs.firstOrNull { it.key == jobKey } ?: job
             Store.addContact(newContact(p.name, p.headline, p.profileUrl, fresh, ContactKind.RECRUITER, source = "posting"))
@@ -218,28 +293,31 @@ object JobRunner {
         return true
     }
 
-    fun kindFor(headline: String): ContactKind =
-        if (headline.contains(Regex("(?i)recruit|talent|hiring|\\bHR\\b|human resources|people ops")))
-            ContactKind.RECRUITER else ContactKind.EMPLOYEE
+    fun kindFor(headline: String): ContactKind = when {
+        headline.contains(Regex("(?i)recruit|talent|\\bHR\\b|human resources|people ops|sourcer")) -> ContactKind.RECRUITER
+        headline.contains(Regex("(?i)engineering manager|\\bmanager\\b|head of|director|\\bvp\\b|vice president|\\bcto\\b|founder|team lead|tech lead")) -> ContactKind.MANAGER
+        headline.contains("hiring", true) -> ContactKind.RECRUITER
+        else -> ContactKind.EMPLOYEE
+    }
 
     /** Builds a suggestion: ranked, with its evidence, a drafted note and referral ask. Nothing is sent. */
     fun newContact(
         name: String, headline: String, url: String, job: Job?,
         kind: ContactKind = kindFor(headline), degree: Int = 0, tag: String = "",
-        source: String = "search", postSnippet: String = "", postUrl: String = "",
+        source: String = "search", postSnippet: String = "", postUrl: String = "", known: Boolean = false,
     ): Contact {
         val d = Store.data
         val r = Rank.score(
             headline, degree, kind, d.profile, job, tag,
             wroteHiringPost = postSnippet.isNotBlank(), namedOnPosting = source == "posting",
-            openings = Why.openingsAt(job?.company.orEmpty(), d).size,
+            openings = Why.openingsAt(job?.company.orEmpty(), d).size, known = known,
         )
         val tpl = pickTemplate(d.profile.noteTemplateB.isNotBlank(), d.contacts.count { it.template == "A" }, d.contacts.count { it.template == "B" })
         val base = Contact(
             id = Store.newId(), name = name, headline = headline, profileUrl = url.substringBefore("?"),
             company = job?.company.orEmpty(), jobKey = job?.key.orEmpty(), kind = kind,
             degree = degree, rank = r.score, why = r.why, template = tpl,
-            source = source, postSnippet = postSnippet, postUrl = postUrl,
+            source = source, postSnippet = postSnippet, postUrl = postUrl, known = known,
             // Existing connections skip the invite step and go straight to the referral ask.
             stage = if (degree == 1) Stage.CONNECTED else Stage.SUGGESTED,
             connectedAt = if (degree == 1) System.currentTimeMillis() else 0,
@@ -261,7 +339,13 @@ object JobRunner {
      */
     fun draftNote(d: AppData, c: Contact, job: Job?): String {
         val p = d.profile
-        val tpl = if (c.template == "B" && p.noteTemplateB.isNotBlank()) p.noteTemplateB else p.noteTemplateA
+        val chosen = if (c.template == "B" && p.noteTemplateB.isNotBlank()) p.noteTemplateB else p.noteTemplateA
+        // While the note is left at its default, frame it for who is being written to.
+        val tpl = if (chosen != Profile.DEFAULT_NOTE) chosen else when (c.kind) {
+            ContactKind.RECRUITER -> Profile.NOTE_RECRUITER
+            ContactKind.MANAGER -> Profile.NOTE_MANAGER
+            else -> chosen
+        }
         if (tpl.isBlank()) return ""
         for (short in listOf(false, true)) {
             val text = fillFor(tpl, d, c, job, short)
@@ -272,7 +356,102 @@ object JobRunner {
         return Templates.fit(fillFor(tpl, d, c, job, true), p.noteCharLimit)
     }
 
-    fun draftAsk(d: AppData, c: Contact, job: Job?): String = fillFor(d.profile.askTemplate, d, c, job)
+    fun draftAsk(d: AppData, c: Contact, job: Job?): String {
+        val chosen = d.profile.askTemplate
+        val tpl = if (chosen != Profile.DEFAULT_ASK) chosen else when {
+            c.known -> Profile.ASK_KNOWN
+            c.kind == ContactKind.RECRUITER -> Profile.ASK_RECRUITER
+            c.kind == ContactKind.MANAGER -> Profile.ASK_MANAGER
+            else -> chosen
+        }
+        return fillFor(tpl, d, c, job)
+    }
+
+    // ---------------- LinkedIn connections export ----------------
+
+    /** Reads LinkedIn's Connections.csv. The file starts with a "Notes:" preamble before the header row. */
+    fun parseConnections(csv: String): List<Connection> {
+        fun split(line: String): List<String> {
+            val out = mutableListOf<String>()
+            val sb = StringBuilder()
+            var q = false
+            var i = 0
+            while (i < line.length) {
+                val ch = line[i]
+                when {
+                    ch == '"' && q && i + 1 < line.length && line[i + 1] == '"' -> { sb.append('"'); i++ }
+                    ch == '"' -> q = !q
+                    ch == ',' && !q -> { out += sb.toString().trim(); sb.clear() }
+                    else -> sb.append(ch)
+                }
+                i++
+            }
+            out += sb.toString().trim()
+            return out
+        }
+        val lines = csv.replace("\r", "").lines()
+        val h = lines.indexOfFirst { it.contains("First Name", true) && it.contains("Company", true) }
+        if (h < 0) return emptyList()
+        val head = split(lines[h]).map { it.lowercase() }
+        fun col(name: String) = head.indexOfFirst { it == name }
+        val fn = col("first name"); val ln = col("last name"); val url = col("url"); val em = col("email address")
+        val co = col("company"); val pos = col("position"); val on = col("connected on")
+        return lines.drop(h + 1).filter { it.isNotBlank() }.mapNotNull { l ->
+            val f = split(l)
+            fun g(i: Int) = if (i in f.indices) f[i] else ""
+            val name = (g(fn) + " " + g(ln)).trim()
+            if (name.isBlank()) null else Connection(name, g(url), g(co), g(pos), g(on), g(em))
+        }
+    }
+
+    fun connectionsAt(company: String, d: AppData): List<Connection> {
+        val n = Why.norm(company)
+        if (n.length < 2) return emptyList()
+        return d.connections.filter { Why.norm(it.company) == n }
+    }
+
+    /** Adds people you already know at the job's company, straight to the referral ask. */
+    suspend fun addKnown(job: Job, people: List<Connection>): Int {
+        var n = 0
+        for (k in people) {
+            if (k.url.isBlank()) continue
+            val existing = Store.data.contacts.firstOrNull { Store.sameProfile(it.profileUrl, k.url) }
+            if (existing != null) {
+                Store.updateContact(existing.id) {
+                    it.copy(known = true, jobKey = it.jobKey.ifBlank { job.key }, company = it.company.ifBlank { job.company })
+                }
+                continue
+            }
+            if (Store.addContact(newContact(k.name, k.position, k.url, job, degree = 1, source = "connections", known = true))) n++
+        }
+        return n
+    }
+
+    // ---------------- Follow-ups on applications ----------------
+
+    /** A follow-up (or interview thank-you) email to the address the application went to. */
+    suspend fun followUpEmail(job: Job, thanks: Boolean): EmailLead? {
+        val sent = Store.data.emails.filter { it.jobKey == job.key && it.sentAt > 0 }.maxByOrNull { it.sentAt } ?: return null
+        val p = Store.data.profile
+        val first = sent.name.trim().split(" ").firstOrNull().orEmpty().ifBlank { "there" }
+        val role = roleOf(job).ifBlank { sent.role }
+        val body = if (thanks) {
+            "Hi $first,\n\nThank you for the conversation about the $role role. I enjoyed learning about the team and the work, " +
+                "and I'm even more interested in joining. If anything else would help, I'm happy to send it.\n\nThanks,\n${p.name}"
+        } else {
+            "Hi $first,\n\nI applied for the $role role at ${Why.shortName(job.company)} a little while ago and wanted to check in. " +
+                "I'm still very interested, and happy to share anything else that would help. My resume is attached again for convenience.\n\nThanks,\n${p.name}"
+        }
+        val lead = EmailLead(
+            id = Store.newId(), to = sent.to, name = sent.name, company = sent.company, role = role, jobKey = job.key,
+            subject = (if (thanks) "Thank you - " else "Re: ") + sent.subject.removePrefix("Re: "), body = body,
+            attachResume = !thanks && sent.attachResume, template = "F",
+        )
+        Store.upsertEmail(lead)
+        Store.updateJob(job.key) { if (thanks) it.copy(thankedAt = System.currentTimeMillis()) else it.copy(followedUpAt = System.currentTimeMillis()) }
+        return lead
+    }
+
 
     /**
      * One-off upgrades when the app is updated. Nothing the user entered is removed:

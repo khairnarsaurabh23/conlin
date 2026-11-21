@@ -158,7 +158,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun skipJob(key: String) = edit {
         Store.update { d -> JobRunner.rescoreAll(d.copy(jobs = d.jobs.map { if (it.key == key) it.copy(status = JobStatus.IGNORED) else it })) }
     }
-    fun setJobStatus(key: String, s: JobStatus) = edit { Store.updateJob(key) { it.copy(status = s) } }
+    fun setJobStatus(key: String, s: JobStatus) = edit {
+        Store.updateJob(key) {
+            it.copy(status = s, interviewAt = if (s == JobStatus.INTERVIEW && it.interviewAt == 0L) System.currentTimeMillis() else it.interviewAt)
+        }
+    }
     fun setJobNotes(key: String, n: String) = edit { Store.updateJob(key) { it.copy(notes = n) } }
     fun dismissPeoplePrompt(key: String) = edit { Store.updateJob(key) { it.copy(peoplePrompted = true) } }
     fun deleteJob(key: String) = edit { Store.deleteJob(key); _openJob.value = null }
@@ -306,6 +310,66 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun approveInvite(id: String) = edit { Store.updateContact(id) { it.copy(stage = Stage.APPROVED) } }
+
+    /** Approve now, send later: the paced queue offers it when it's its turn. */
+    fun addToQueue(c: Contact) = edit {
+        Store.updateContact(c.id) { it.copy(stage = if (it.stage == Stage.SUGGESTED) Stage.APPROVED else Stage.ASK_APPROVED) }
+        val p = Store.data.profile
+        toast(
+            if (p.paceEnabled) "Added to the queue. You'll get a notification when it's ${c.name.substringBefore(' ')}'s turn."
+            else "Added to Send."
+        )
+    }
+
+    /** From a queue notification. */
+    fun openQueued(id: String) {
+        val c = Store.data.contacts.firstOrNull { it.id == id }
+        when {
+            c == null -> toast("That person is no longer in the queue")
+            c.stage != Stage.APPROVED && c.stage != Stage.ASK_APPROVED -> toast("${c.name} is already done")
+            else -> openForSend(c, queued = true)
+        }
+    }
+
+    // ---------------- connections you already have ----------------
+
+    fun importConnections(uri: Uri) = edit {
+        val text = withContext(Dispatchers.IO) {
+            ctx.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+        }
+        val list = text?.let { JobRunner.parseConnections(it) }.orEmpty()
+        if (list.isEmpty()) {
+            toast("That doesn't look like LinkedIn's Connections.csv"); return@edit
+        }
+        Store.update { it.copy(connections = list, connectionsImportedAt = System.currentTimeMillis()) }
+        val companies = list.map { com.jobpilot.core.Why.norm(it.company) }.filter { it.length > 1 }.toSet()
+        val matched = Store.data.jobs.count { com.jobpilot.core.Why.norm(it.company) in companies && it.status != JobStatus.IGNORED }
+        toast("Imported ${list.size} connections" + if (matched > 0) ". You know someone at $matched of your jobs." else ".")
+    }
+
+    fun askKnown(job: Job) = edit {
+        val people = JobRunner.connectionsAt(job.company, Store.data)
+        if (job.status == JobStatus.NEW) Store.updateJob(job.key) { it.copy(status = JobStatus.SAVED) }
+        val n = JobRunner.addKnown(job, people)
+        toast(if (n > 0) "$n added to Referrals, with a message ready" else "They're already in your list")
+    }
+
+    // ---------------- application follow-ups ----------------
+
+    fun followUpEmail(job: Job, thanks: Boolean, onDraft: (EmailLead) -> Unit) = edit {
+        val lead = JobRunner.followUpEmail(job, thanks)
+        if (lead == null) toast("No email was sent for this job, so there's no thread to follow up on") else onDraft(lead)
+    }
+
+    fun dropClosed(keys: List<String>) = edit {
+        Store.update { d -> d.copy(jobs = d.jobs.map { if (it.key in keys) it.copy(status = JobStatus.IGNORED) else it }) }
+        toast("Cleared ${keys.size}")
+    }
+
+    fun dismissFollowUp(job: Job, thanks: Boolean) = edit {
+        val now = System.currentTimeMillis()
+        Store.updateJob(job.key) { if (thanks) it.copy(thankedAt = now) else it.copy(followedUpAt = now) }
+    }
     fun approveAsk(id: String) = edit { Store.updateContact(id) { it.copy(stage = Stage.ASK_APPROVED) } }
     fun unapprove(id: String) = edit {
         Store.updateContact(id) {
@@ -506,6 +570,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun saveProfile(p: Profile) = edit {
         Store.setProfile(p)
         SearchWorker.schedule(ctx)
+        com.jobpilot.work.PaceWorker.schedule(ctx)
         rescoreAll()
         toast("Saved")
     }

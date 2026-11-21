@@ -168,7 +168,9 @@ object MailScan {
 
     private suspend fun applyToJob(key: String, kind: ReplyKind) {
         when (kind) {
-            ReplyKind.INTERVIEW -> Store.updateJob(key) { it.copy(status = JobStatus.INTERVIEW) }
+            ReplyKind.INTERVIEW -> Store.updateJob(key) {
+                it.copy(status = JobStatus.INTERVIEW, interviewAt = if (it.interviewAt == 0L) System.currentTimeMillis() else it.interviewAt)
+            }
             ReplyKind.REJECTION -> Store.updateJob(key) { if (it.status != JobStatus.INTERVIEW) it.copy(status = JobStatus.REJECTED) else it }
             else -> {}
         }
