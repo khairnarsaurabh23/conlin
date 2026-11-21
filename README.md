@@ -19,11 +19,13 @@ Approved items move to **Ready to send**. For LinkedIn, the app copies the text 
 
 Approved emails are sent from the app through Gmail (with an App Password), or opened one at a time in the Gmail app.
 
-## Paced queue (new in 3.0)
+## Daily send session (3.1)
 
-Approve as many people as you like with **Add to queue**. JobPilot releases them one at a time: every 20 minutes (you choose, at least 15) between 10:00 and 19:00, it sends a notification for the next one, best first. Tap it and the profile opens with the note copied; you press Connect or Message. Nothing is sent without your tap, the daily and weekly caps still apply, and reminders stop while outreach is paused. The Send tab shows how many are queued and when the next one is due.
+Approve people whenever you like; nothing is sent and nothing pings you. Once a day, at a time you pick (10:00 by default), one notification says how many are ready. Tap it, or **Start sending** in Send any time, and they come up one after another in Browse: tap Connect and Add a note (or Message), JobPilot types the approved text into the box, you tap Send, and the next person opens by itself when the page shows it went out. About 5 minutes for a day's batch. Daily and weekly limits still cap each session, and it stops if LinkedIn shows a warning. JobPilot types text but never presses Connect or Send.
 
-Approved emails, which the app is allowed to send through Gmail, can drip out the same way, one every 30 minutes within those hours.
+Approved emails can drip out by themselves, one every 30 minutes within hours you set.
+
+The Browse shortcuts highlight the site you're on (or show its name if it isn't one of them).
 
 ## Ideas taken from career-ops
 

@@ -189,7 +189,7 @@ private fun PeopleList(vm: AppViewModel, data: AppData) {
                                         Btn("Yes, it was sent", { vm.confirmSent(c, true) }, primary = true)
                                         Btn("Not sent", { vm.confirmSent(c, false) })
                                     } else {
-                                        Btn("Send now", { vm.openForSend(c) }, primary = true)
+                                        Btn("Send now", { vm.sendOne(c) }, primary = true)
                                         Btn("Move back", { vm.unapprove(c.id) })
                                     }
                                     Stage.INVITED -> Btn("They accepted", { vm.setStage(c.id, Stage.CONNECTED) }, primary = true)

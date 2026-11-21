@@ -36,6 +36,7 @@ import com.jobpilot.data.Stage
 import com.jobpilot.data.Store
 import com.jobpilot.work.SearchWorker
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -315,10 +316,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun addToQueue(c: Contact) = edit {
         Store.updateContact(c.id) { it.copy(stage = if (it.stage == Stage.SUGGESTED) Stage.APPROVED else Stage.ASK_APPROVED) }
         val p = Store.data.profile
-        toast(
-            if (p.paceEnabled) "Added to the queue. You'll get a notification when it's ${c.name.substringBefore(' ')}'s turn."
-            else "Added to Send."
-        )
+        toast(if (p.paceEnabled) "Added. It goes out in your ${p.sessionTime} send session, or send it any time from Send." else "Added to Send.")
     }
 
     /** From a queue notification. */
@@ -327,7 +325,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         when {
             c == null -> toast("That person is no longer in the queue")
             c.stage != Stage.APPROVED && c.stage != Stage.ASK_APPROVED -> toast("${c.name} is already done")
-            else -> openForSend(c, queued = true)
+            else -> sendOne(c)
         }
     }
 
@@ -438,32 +436,104 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun approveAndSend(c: Contact) {
         val next = c.copy(stage = if (c.stage == Stage.SUGGESTED) Stage.APPROVED else Stage.ASK_APPROVED)
-        edit { Store.updateContact(c.id) { it.copy(stage = next.stage) } }
-        openForSend(next, queued = true)
+        edit { Store.updateContact(c.id) { it.copy(stage = next.stage) }; sendOne(next) }
     }
 
-    fun openForSend(c: Contact, queued: Boolean = false) {
+    /** One send, with the text typed in for you (in Browse). */
+    fun sendOne(c: Contact) {
+        if (Store.data.profile.openInLinkedInApp) { openForSend(c, queued = true); return }
+        if (sessionContactId != null) stopSession()
+        _session.value = listOf(c.id); _sessionIndex.value = -1; sessionSent = 0
+        sessionNext()
+    }
+
+    private fun sendCheck(c: Contact, now: Long, session: Boolean) = when {
+        c.stage == Stage.APPROVED -> Guard.canInvite(Store.data, now, session)
+        c.direct && c.degree != 1 && c.connectedAt == 0L -> Guard.canDirect(Store.data, now, session)
+        else -> Guard.canMessage(Store.data, now, session)
+    }
+
+    // ---------------- Send session: everything approved, one after another ----------------
+
+    private val _session = MutableStateFlow<List<String>>(emptyList())
+    val session = _session.asStateFlow()
+    private val _sessionIndex = MutableStateFlow(-1)
+    val sessionIndex = _sessionIndex.asStateFlow()
+    private var sessionSent = 0
+    val sessionContactId: String? get() = _session.value.getOrNull(_sessionIndex.value)
+
+    fun startSession() {
+        val q = com.jobpilot.core.Pacer.queue(Store.data).map { it.id }
+        if (q.isEmpty()) { toast("Nothing waiting to send"); return }
+        _session.value = q; _sessionIndex.value = -1; sessionSent = 0
+        sessionNext()
+    }
+
+    /** Opens the next one that fits today's limits; ends the session when none is left. */
+    fun sessionNext() {
+        val q = _session.value
+        val now = System.currentTimeMillis()
+        var i = _sessionIndex.value + 1
+        var blocked = ""
+        while (i < q.size) {
+            val c = Store.data.contacts.firstOrNull { it.id == q[i] }
+            if (c != null && (c.stage == Stage.APPROVED || c.stage == Stage.ASK_APPROVED)) {
+                val check = sendCheck(c, now, true)
+                if (check.ok) { _sessionIndex.value = i; openForSend(c, queued = true, session = true); return }
+                blocked = check.reason
+            }
+            i++
+        }
+        val left = com.jobpilot.core.Pacer.queue(Store.data).size
+        _session.value = emptyList(); _sessionIndex.value = -1
+        toast("Done. Sent $sessionSent." + if (left > 0) " $left wait for tomorrow" + (if (blocked.isNotBlank()) " ($blocked)." else ".") else "")
+    }
+
+    fun sessionSkip() {
+        sessionContactId?.let { id -> edit { Store.updateContact(id) { it.copy(openedAt = 0) } } }
+        sessionNext()
+    }
+
+    /** If the page didn't show it as sent, log it by hand and move on. */
+    fun sessionSentManually() {
+        val c = Store.data.contacts.firstOrNull { it.id == sessionContactId } ?: return sessionNext()
+        edit { confirmSent(c, true).join(); sessionSent++; sessionNext() }
+    }
+
+    fun stopSession() {
+        sessionContactId?.let { id -> edit { Store.updateContact(id) { it.copy(openedAt = 0) } } }
+        _session.value = emptyList(); _sessionIndex.value = -1
+        toast("Stopped. Sent $sessionSent; the rest stay in Send.")
+    }
+
+    /** Text for the box on the open profile, while a session is on. */
+    fun sessionText(): Pair<String, Boolean>? {
+        val c = Store.data.contacts.firstOrNull { it.id == sessionContactId } ?: return null
+        val invite = c.stage == Stage.APPROVED
+        val t = if (invite) c.note else c.ask
+        return if (t.isBlank()) null else t to invite
+    }
+
+    fun openForSend(c: Contact, queued: Boolean = false, session: Boolean = false) {
         val d = Store.data
         val now = System.currentTimeMillis()
         val isInvite = c.stage == Stage.APPROVED
-        val check = when {
-            isInvite -> Guard.canInvite(d, now)
-            c.direct && c.degree != 1 && c.connectedAt == 0L -> Guard.canDirect(d, now)
-            else -> Guard.canMessage(d, now)
-        }
+        val check = sendCheck(c, now, session)
         if (!check.ok) { toast(check.reason + if (queued) ". It is waiting in Send." else ""); return }
         val text = if (isInvite) c.note else c.ask
         if (text.isNotBlank()) {
             ctx.getSystemService(ClipboardManager::class.java)
                 .setPrimaryClip(ClipData.newPlainText(if (isInvite) "Connection note" else "Message", text))
         }
-        if (d.profile.openInLinkedInApp) openUrl(c.profileUrl) else {
+        if (d.profile.openInLinkedInApp && !session) openUrl(c.profileUrl) else {
             _browserUrl.value = c.profileUrl
             _tab.value = Tab.LINKEDIN
         }
         edit { Store.updateContact(c.id) { it.copy(openedAt = now) } }
         toast(
             when {
+                session && !isInvite -> "Tap Message. JobPilot types it in; you tap Send."
+                session && text.isNotBlank() -> "Tap Connect, then Add a note. JobPilot types it in; you tap Send."
                 !isInvite -> "Message copied. Tap Message on the profile, paste and send."
                 text.isBlank() -> "Tap Connect on the profile."
                 else -> "Note copied. Tap Connect, then Add a note, paste and send."
@@ -476,20 +546,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val d = Store.data
         val job = d.jobs.firstOrNull { it.key == c.jobKey }
         val next = c.copy(stage = Stage.ASK_APPROVED, direct = true, ask = if (c.edited) c.ask else JobRunner.draftDirect(d, c, job))
-        edit { Store.updateContact(c.id) { next } }
-        openForSend(next, queued = true)
+        edit { Store.updateContact(c.id) { next }; sendOne(next) }
     }
 
     /** Seen in Browse: the request shows as Pending, the message is in the thread, or they are now 1st-degree. */
     fun detected(id: String, what: String) = edit {
         val c = Store.data.contacts.firstOrNull { it.id == id } ?: return@edit
+        val inSession = id == sessionContactId
+        var advance = false
         when (what) {
-            "pending" -> if (c.stage == Stage.APPROVED && c.openedAt > 0) { confirmSent(c, true); toast("Request to ${c.name} sent. Logged automatically.") }
-            "sent" -> if (c.stage == Stage.ASK_APPROVED && c.openedAt > 0) { confirmSent(c, true); toast("Message to ${c.name} sent. Logged automatically.") }
+            "pending" -> if (c.stage == Stage.APPROVED && c.openedAt > 0) {
+                confirmSent(c, true).join(); advance = true
+                toast(if (inSession) "Sent to ${c.name}. Next one coming up." else "Request to ${c.name} sent. Logged automatically.")
+            }
+            "sent" -> if (c.stage == Stage.ASK_APPROVED && c.openedAt > 0) {
+                confirmSent(c, true).join(); advance = true
+                toast(if (inSession) "Sent to ${c.name}. Next one coming up." else "Message to ${c.name} sent. Logged automatically.")
+            }
             "connected" -> if (c.stage == Stage.SUGGESTED || c.stage == Stage.APPROVED || c.stage == Stage.INVITED) {
                 Store.updateContact(id) { it.copy(stage = Stage.CONNECTED, degree = 1, connectedAt = System.currentTimeMillis(), openedAt = 0) }
                 toast("${c.name} is connected. Their referral message is in your inbox.")
+                if (inSession) { sessionSent--; advance = true }
             }
+        }
+        if (inSession && advance) {
+            sessionSent++
+            delay(1500)
+            if (sessionContactId == id) sessionNext()
         }
     }
 

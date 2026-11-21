@@ -218,11 +218,14 @@ fun InboxScreen(vm: AppViewModel, data: AppData, busy: Boolean) {
                 ) { c -> Column(Modifier.animateItem().padding(bottom = 10.dp)) { SendPersonCard(vm, data, c, jobsByKey[c.jobKey], now) } }
             } else if (cards.isNotEmpty()) item(key = "send-hint") {
                 Column(Modifier.padding(start = 4.dp, end = 4.dp, bottom = 12.dp)) {
-                    if (data.contacts.any { it.stage == Stage.APPROVED || it.stage == Stage.ASK_APPROVED }) {
+                    val waiting = Pacer.queue(data).size
+                    if (waiting > 0) {
                         Text(Pacer.status(data, now), style = MaterialTheme.typography.bodyMedium)
-                        Gap(4)
+                        Gap(8)
+                        Btn("Start sending ($waiting)", { vm.startSession() }, Modifier.fillMaxWidth(), primary = true)
+                        Gap(8)
                     }
-                    Muted("LinkedIn doesn't let apps send for you, so each one takes a tap: JobPilot copies the text and opens the profile, you press Connect or Message and paste. It notices when it's sent.")
+                    Muted("Each one opens with the text typed in; you tap Connect or Message, then Send. The next one opens by itself.")
                 }
             }
             if (tab == InboxTab.JOBS && newJobs.isNotEmpty()) item(key = "cats") {
@@ -449,7 +452,7 @@ private fun PersonCard(
 @Composable
 private fun SendPersonCard(vm: AppViewModel, data: AppData, c: Contact, job: Job?, now: Long) {
     val invite = c.stage == Stage.APPROVED
-    val check = if (invite) Guard.canInvite(data, now) else Guard.canMessage(data, now)
+    val check = if (invite) Guard.canInvite(data, now, true) else Guard.canMessage(data, now, true)
     val text = if (invite) c.note else c.ask
     Panel {
         Label(if (invite) "connection request" else if (c.followUps > 0) "follow-up message" else "referral message")
@@ -465,7 +468,7 @@ private fun SendPersonCard(vm: AppViewModel, data: AppData, c: Contact, job: Job
             }
         } else {
             ButtonRow {
-                Btn(if (text.isBlank()) "Open profile" else "Copy and open profile", { vm.openForSend(c) }, primary = true, enabled = check.ok)
+                Btn("Send", { vm.sendOne(c) }, primary = true, enabled = check.ok)
                 Quiet("Move back", { vm.unapprove(c.id) })
             }
             if (!check.ok) Muted(check.reason, Modifier.padding(top = 4.dp), color = warn)

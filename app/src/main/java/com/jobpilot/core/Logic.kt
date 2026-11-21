@@ -83,12 +83,18 @@ object Guard {
         return if (waitMs > 0) Check(false, "Wait ${(waitMs / 60_000) + 1} min before the next one") else null
     }
 
-    fun canInvite(d: AppData, now: Long): Check {
+    /** [session]: you're sending a batch yourself, so the spacing rule between single sends doesn't apply. */
+    fun canInvite(d: AppData, now: Long, session: Boolean = false): Check {
         pauseText(d, now)?.let { return Check(false, it) }
         val u = inviteUsage(d, now)
         if (u.today >= u.limits.day) return Check(false, "Daily limit reached (${u.today} of ${u.limits.day})")
         if (u.week >= u.limits.week) return Check(false, "Weekly limit reached (${u.week} of ${u.limits.week})")
-        return gap(d, now) ?: Check(true)
+        return (if (session) null else gap(d, now)) ?: Check(true)
+    }
+
+    fun invitesLeft(d: AppData, now: Long): Int {
+        val u = inviteUsage(d, now)
+        return minOf(u.limits.day - u.today, u.limits.week - u.week).coerceAtLeast(0)
     }
 
     /** Direct messages to non-connections left in the rolling month. On Premium, answered ones come back. */
@@ -101,16 +107,16 @@ object Guard {
         return (d.profile.directPerMonth - used).coerceAtLeast(0)
     }
 
-    fun canDirect(d: AppData, now: Long): Check {
+    fun canDirect(d: AppData, now: Long, session: Boolean = false): Check {
         if (directLeft(d, now) <= 0) return Check(false, "No direct messages left this month")
-        return canMessage(d, now)
+        return canMessage(d, now, session)
     }
 
-    fun canMessage(d: AppData, now: Long): Check {
+    fun canMessage(d: AppData, now: Long, session: Boolean = false): Check {
         if (!d.safety.invitesOnly) pauseText(d, now)?.let { return Check(false, it) }
         val today = count(d, ActionKind.MESSAGE, DAY, now) + count(d, ActionKind.DIRECT, DAY, now)
         if (today >= d.profile.dailyMessageCap) return Check(false, "Daily message limit reached ($today of ${d.profile.dailyMessageCap})")
-        return gap(d, now) ?: Check(true)
+        return (if (session) null else gap(d, now)) ?: Check(true)
     }
 
     fun emailsLeftToday(d: AppData, now: Long): Int =
@@ -703,7 +709,7 @@ object Pacer {
 
     fun queueSize(d: AppData) = queue(d).size
 
-    private fun queue(d: AppData): List<Contact> = d.contacts
+    fun queue(d: AppData): List<Contact> = d.contacts
         .filter { it.stage == Stage.ASK_APPROVED || it.stage == Stage.APPROVED }
         .sortedWith(compareByDescending<Contact> { it.stage == Stage.ASK_APPROVED }.thenByDescending { it.rank })
 
@@ -727,14 +733,46 @@ object Pacer {
         return Next(c, 0, "Ready")
     }
 
+    /** "10:00" -> (10, 0); falls back to 10:00. */
+    fun sessionClock(p: Profile): Pair<Int, Int> {
+        val m = Regex("^(\\d{1,2})[:.](\\d{2})$").find(p.sessionTime.trim())
+        val h = m?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it in 0..23 } ?: 10
+        val min = m?.groupValues?.get(2)?.toIntOrNull()?.takeIf { it in 0..59 } ?: 0
+        return h to min
+    }
+
+    /** Today's reminder time, in millis. */
+    fun sessionAt(p: Profile, now: Long): Long {
+        val (h, m) = sessionClock(p)
+        return java.util.Calendar.getInstance().apply {
+            timeInMillis = now; set(java.util.Calendar.HOUR_OF_DAY, h); set(java.util.Calendar.MINUTE, m)
+            set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+    }
+
+    fun day(now: Long): String = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date(now))
+
+    /** Time for today's one reminder: past the set time, not reminded yet today, and something to send. */
+    fun reminderDue(d: AppData, now: Long): Boolean =
+        d.profile.paceEnabled && queue(d).isNotEmpty() && now >= sessionAt(d.profile, now) && d.pace.lastReminderDay != day(now)
+
+    /** How many of the queue fit in today's limits. */
+    fun sendableNow(d: AppData, now: Long): Int {
+        val q = queue(d)
+        val invites = q.count { it.stage == Stage.APPROVED }
+        val msgs = q.size - invites
+        val invLeft = if (Guard.canInvite(d, now, true).ok) minOf(invites, Guard.invitesLeft(d, now)) else 0
+        val msgLeft = if (Guard.canMessage(d, now, true).ok) msgs else 0
+        return invLeft + msgLeft
+    }
+
     fun status(d: AppData, now: Long): String {
         val p = d.profile
-        if (!p.paceEnabled) return "Paced queue is off. Send from here whenever you like."
-        val n = next(d, now)
         val count = queue(d).size
-        if (count == 0) return "Queue is empty. Approved requests wait here and are released one at a time."
-        return "$count in the queue, one every ${p.paceMinutes} min between ${p.paceStartHour}:00 and ${p.paceEndHour}:00. " +
-            when { n.contact != null -> "Next one is ready now."; else -> n.reason + "." }
+        if (count == 0) return "Nothing waiting. Approved requests collect here until you send them."
+        val ready = sendableNow(d, now)
+        val head = "$count waiting" + if (ready < count) ", $ready fit today's limits" else ""
+        return head + if (p.paceEnabled) ". Reminder at ${p.sessionTime} daily; send any time." else ". Send any time."
     }
 
     fun emailDue(d: AppData, now: Long): Boolean {

@@ -70,8 +70,9 @@ data class Profile(
     /** Premium: InMail credits come back when the person replies within 90 days. */
     val premium: Boolean = false,
 
-    // Paced queue: approved LinkedIn sends are released one at a time, as reminders.
+    // Send session: approved LinkedIn sends wait in a queue; one reminder a day at [sessionTime].
     val paceEnabled: Boolean = true,
+    val sessionTime: String = "10:00",
     val paceMinutes: Int = 20,
     val paceStartHour: Int = 10,
     val paceEndHour: Int = 19,
@@ -488,4 +489,6 @@ data class PaceState(
     val lastNotifiedAt: Long = 0,
     val lastNotifiedId: String = "",
     val lastEmailAt: Long = 0,
+    /** yyyyMMdd of the last daily send-session reminder. */
+    val lastReminderDay: String = "",
 )

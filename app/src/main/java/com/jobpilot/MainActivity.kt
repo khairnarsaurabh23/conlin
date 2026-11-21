@@ -73,9 +73,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(i: Intent?) {
-        i?.getStringExtra(com.jobpilot.work.PaceWorker.EXTRA_CONTACT)?.let { id ->
-            i?.removeExtra(com.jobpilot.work.PaceWorker.EXTRA_CONTACT)
-            vm.openQueued(id)
+        if (i != null && i.getBooleanExtra(com.jobpilot.work.SendSession.EXTRA_START, false)) {
+            i.removeExtra(com.jobpilot.work.SendSession.EXTRA_START)
+            vm.startSession()
             return
         }
         if (i?.action == Intent.ACTION_SEND && i.type?.startsWith("text/") == true) {

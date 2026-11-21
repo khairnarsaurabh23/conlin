@@ -130,24 +130,35 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
             Muted("Direct messages are offered only for people you aren't connected to. Save them for those with a hiring post or on the posting. Members with an Open Profile can be messaged free; LinkedIn shows that on their profile.")
             NumField("Flag invites unanswered after N days", p.staleInviteDays) { p = p.copy(staleInviteDays = it.coerceIn(7, 60)) }
 
-            SectionTitle("Paced queue")
+            SectionTitle("Daily send session")
             Toggle(
-                "Release approved requests one at a time", p.paceEnabled,
-                "Approve as many as you like; JobPilot notifies you when it's the next one's turn, so sends are spread through the day instead of in a burst. You still tap Connect or Send yourself.",
+                "Remind me once a day", p.paceEnabled,
+                "Approved requests and referral messages wait in Send. One notification a day; tap it and they come up one after another with the text typed in. You can also start from Send any time.",
             ) { p = p.copy(paceEnabled = it) }
             if (p.paceEnabled) {
-                NumField("Minutes between requests (at least 15)", p.paceMinutes) { p = p.copy(paceMinutes = it.coerceIn(15, 240)) }
+                val ctx = androidx.compose.ui.platform.LocalContext.current
+                val (rh, rm) = com.jobpilot.core.Pacer.sessionClock(p)
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Reminder time", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    Btn(String.format(java.util.Locale.US, "%d:%02d %s", if (rh % 12 == 0) 12 else rh % 12, rm, if (rh < 12) "AM" else "PM"), {
+                        android.app.TimePickerDialog(ctx, { _, h, m ->
+                            p = p.copy(sessionTime = String.format(java.util.Locale.US, "%02d:%02d", h, m))
+                        }, rh, rm, false).show()
+                    })
+                }
+                Muted("No reminder when nothing is waiting or today's limits are used up.")
+            }
+            Toggle(
+                "Send approved emails slowly", p.emailDrip,
+                "Approved emails go out by themselves, one at a time, between the hours below. Needs the Gmail App Password. Send now still sends them all at once.",
+            ) { p = p.copy(emailDrip = it) }
+            if (p.emailDrip) {
+                NumField("Minutes between emails", p.emailDripMinutes) { p = p.copy(emailDripMinutes = it.coerceIn(15, 240)) }
                 Row {
                     NumField("From hour", p.paceStartHour, Modifier.weight(1f).padding(end = 6.dp)) { p = p.copy(paceStartHour = it.coerceIn(0, 23)) }
                     NumField("Until hour", p.paceEndHour, Modifier.weight(1f).padding(start = 6.dp)) { p = p.copy(paceEndHour = it.coerceIn(1, 24)) }
                 }
-                Muted("Daily and weekly caps above still apply. Reminders stop while outreach is paused.")
             }
-            Toggle(
-                "Send approved emails slowly", p.emailDrip,
-                "Approved emails go out by themselves, one at a time, within the hours above. Needs the Gmail App Password. Send now still sends them all at once.",
-            ) { p = p.copy(emailDrip = it) }
-            if (p.emailDrip) NumField("Minutes between emails", p.emailDripMinutes) { p = p.copy(emailDripMinutes = it.coerceIn(15, 240)) }
 
             SectionTitle("People you already know")
             Muted(

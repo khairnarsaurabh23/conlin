@@ -1,9 +1,11 @@
 package com.jobpilot.work
 
 import android.Manifest
+import android.app.AlarmManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -22,35 +24,22 @@ import com.jobpilot.MainActivity
 import com.jobpilot.R
 import com.jobpilot.core.Mailer
 import com.jobpilot.core.Pacer
-import com.jobpilot.data.Contact
-import com.jobpilot.data.Stage
 import com.jobpilot.data.Store
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
 /**
- * The paced queue. Every 15 minutes: if it's within your sending hours and enough time has
- * passed since the last send, the next approved LinkedIn request is offered as a notification.
- * Tapping it opens the profile with the text copied; you press Connect or Message yourself.
- * Approved emails, which the app may send, go out one at a time on the same clock.
+ * Every 15 minutes: the once-a-day send-session reminder (backup for the alarm, e.g. after a
+ * reboot), and the slow drip of approved emails. LinkedIn sends always wait for you.
  */
 class PaceWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
         Store.init(applicationContext)
+        SendSession.remindIfDue(applicationContext)
+        SendSession.scheduleAlarm(applicationContext)
         val now = System.currentTimeMillis()
-        val d = Store.data
-        val p = d.profile
-
-        if (p.paceEnabled) {
-            val next = Pacer.next(d, now)
-            val c = next.contact
-            // Don't nag about the same person: one reminder, then again after two hours if untouched.
-            val repeat = c != null && d.pace.lastNotifiedId == c.id && now - d.pace.lastNotifiedAt < TimeUnit.HOURS.toMillis(2)
-            if (c != null && !repeat) {
-                notify(applicationContext, c, Pacer.queueSize(d))
-                Store.update { it.copy(pace = it.pace.copy(lastNotifiedAt = now, lastNotifiedId = c.id)) }
-            }
-        }
-
         if (Pacer.emailDue(Store.data, now)) {
             Store.update { it.copy(pace = it.pace.copy(lastEmailAt = now)) }
             runCatching { Mailer.sendNext() }
@@ -60,52 +49,88 @@ class PaceWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
 
     companion object {
         private const val NAME = "jobpilot-paced-queue"
-        private const val CHANNEL = "jobpilot-queue"
-        const val EXTRA_CONTACT = "send_contact"
 
         fun schedule(context: Context) {
-            val p = Store.data.profile
             val wm = WorkManager.getInstance(context)
-            if (!p.paceEnabled && !p.emailDrip) { wm.cancelUniqueWork(NAME); return }
             val req = PeriodicWorkRequestBuilder<PaceWorker>(15, TimeUnit.MINUTES)
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()
             wm.enqueueUniquePeriodicWork(NAME, ExistingPeriodicWorkPolicy.UPDATE, req)
+            SendSession.scheduleAlarm(context)
         }
+    }
+}
 
-        fun notify(context: Context, c: Contact, inQueue: Int) {
-            if (Build.VERSION.SDK_INT >= 33 &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-            ) return
-            val nm = context.getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(NotificationChannel(CHANNEL, "Send queue", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                description = "The next approved LinkedIn request, one at a time"
-            })
-            val intent = Intent(context, MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                .putExtra(EXTRA_CONTACT, c.id)
-            val pi = PendingIntent.getActivity(context, 2, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            val what = if (c.stage == Stage.APPROVED) "connection request" else "message"
-            val title = "Next up: $what to ${c.name}"
-            val text = buildString {
-                append(listOf(c.headline, c.company).filter { it.isNotBlank() }.joinToString(" · ").take(80))
-                if (isNotEmpty()) append("\n")
-                append("Tap to open the profile with the text copied.")
-                if (inQueue > 1) append(" ${inQueue - 1} more after this.")
-            }
-            val n = NotificationCompat.Builder(context, CHANNEL)
-                .setSmallIcon(R.drawable.ic_launcher_foreground)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-                .setContentIntent(pi)
-                .setAutoCancel(true)
-                .setTimeoutAfter(TimeUnit.HOURS.toMillis(2))
-                .build()
+/** Fires at the reminder time you set. */
+class ReminderReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val pending = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
             try {
-                NotificationManagerCompat.from(context).notify(1002, n)
-            } catch (_: SecurityException) {
+                Store.init(context.applicationContext)
+                SendSession.remindIfDue(context.applicationContext)
+                SendSession.scheduleAlarm(context.applicationContext)
+            } finally {
+                pending.finish()
             }
+        }
+    }
+}
+
+object SendSession {
+    private const val CHANNEL = "jobpilot-queue"
+    const val EXTRA_START = "start_session"
+
+    suspend fun remindIfDue(context: Context) {
+        val now = System.currentTimeMillis()
+        val d = Store.data
+        if (!Pacer.reminderDue(d, now)) return
+        Store.update { it.copy(pace = it.pace.copy(lastReminderDay = Pacer.day(now), lastNotifiedAt = now)) }
+        val ready = Pacer.sendableNow(d, now)
+        if (ready == 0) return // limits or a pause: nothing could be sent today anyway
+        notify(context, ready)
+    }
+
+    /** Next reminder: today at the set time if still ahead, otherwise tomorrow. Inexact, so no special permission. */
+    fun scheduleAlarm(context: Context) {
+        val am = context.getSystemService(AlarmManager::class.java) ?: return
+        val pi = PendingIntent.getBroadcast(
+            context, 3, Intent(context, ReminderReceiver::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val p = Store.data.profile
+        if (!p.paceEnabled) { am.cancel(pi); return }
+        val now = System.currentTimeMillis()
+        var at = Pacer.sessionAt(p, now)
+        if (at <= now) at = Pacer.sessionAt(p, now + TimeUnit.DAYS.toMillis(1))
+        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+    }
+
+    private fun notify(context: Context, ready: Int) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+        val nm = context.getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Daily send reminder", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            description = "Once a day, when approved LinkedIn requests are waiting"
+        })
+        val intent = Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            .putExtra(EXTRA_START, true)
+        val pi = PendingIntent.getActivity(context, 2, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val mins = maxOf(2, (ready * 25 + 59) / 60)
+        val text = "Tap to start. About $mins min: Connect, Send, and the next one opens by itself."
+        val n = NotificationCompat.Builder(context, CHANNEL)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle("$ready LinkedIn ${if (ready == 1) "request is" else "requests are"} ready to send")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        try {
+            NotificationManagerCompat.from(context).notify(1002, n)
+        } catch (_: SecurityException) {
         }
     }
 }

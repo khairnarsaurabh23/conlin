@@ -9,7 +9,9 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -247,6 +249,29 @@ private const val STATE_JS = """
 })
 """
 
+/** Types the approved note or message into the box you opened. Never clicks anything. */
+private const val TYPE_JS = """
+(function(A){
+ function vis(e){ var r=e.getBoundingClientRect(); return r.width>0 && r.height>0; }
+ function meta(e){ return ((e.getAttribute('name')||'')+' '+(e.id||'')+' '+(e.getAttribute('placeholder')||'')+' '+(e.getAttribute('aria-label')||'')).toLowerCase(); }
+ var c=[].slice.call(document.querySelectorAll('textarea,[contenteditable=true],[role=textbox]')).filter(vis)
+   .filter(function(e){ return meta(e).indexOf('search')<0 && meta(e).indexOf('comment')<0; });
+ if(A.invite) c=c.filter(function(e){ return e.closest('[role=dialog],.artdeco-modal,[class*=invite]') || /note|message|invit/.test(meta(e)); });
+ var e=c[c.length-1]; if(!e) return 'none';
+ var cur=e.tagName==='TEXTAREA'?e.value:(e.innerText||'');
+ if(cur.replace(/\s/g,'').length>0) return 'busy';
+ e.focus();
+ if(e.tagName==='TEXTAREA'){
+   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,A.text);
+   e.dispatchEvent(new Event('input',{bubbles:true})); e.dispatchEvent(new Event('change',{bubbles:true}));
+ } else {
+   if(!document.execCommand('insertText',false,A.text)) e.innerText=A.text;
+   e.dispatchEvent(new InputEvent('input',{bubbles:true}));
+ }
+ return 'filled';
+})
+"""
+
 /** Profile links on the page (used on your Connections page to spot accepted invites). */
 private const val LINKS_JS =
     "(function(){var o=[];document.querySelectorAll('a[href*=\"/in/\"]').forEach(function(a){o.push((a.href||'').split('?')[0]);});return JSON.stringify(o);})()"
@@ -412,6 +437,29 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView, pickFile: (
         }
     }
 
+    // Send session: when you open the Connect note box or a message box, type the approved text in.
+    val session by vm.session.collectAsState()
+    val sessionIndex by vm.sessionIndex.collectAsState()
+    val sessionContact = session.getOrNull(sessionIndex)?.let { id -> data.contacts.firstOrNull { it.id == id } }
+    var typedFor by remember { mutableStateOf("") }
+    var retype by remember { mutableStateOf(0) }
+    LaunchedEffect(sessionContact?.id, retype) {
+        val id = sessionContact?.id ?: return@LaunchedEffect
+        typedFor = ""
+        repeat(600) { // up to ~12 minutes per person
+            delay(1200)
+            if (typedFor == id || vm.sessionContactId != id) return@LaunchedEffect
+            val (text, invite) = vm.sessionText() ?: return@LaunchedEffect
+            val arg = buildJsonObject { put("text", text); put("invite", invite) }.toString()
+            webView.evaluateJavascript(TYPE_JS + "(" + arg + ")") { raw ->
+                if (decodeJsResult(raw) == "filled" && typedFor != id) {
+                    typedFor = id
+                    vm.toast(if (invite) "Note typed in. Check it and tap Send." else "Message typed in. Check it and tap Send.")
+                }
+            }
+        }
+    }
+
     // A people search opened from a job: read the results as soon as they load.
     val autoGrab by vm.autoGrab.collectAsState()
     LaunchedEffect(pageLoads, autoGrab) {
@@ -466,24 +514,49 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView, pickFile: (
                 })
             }
         }
-        Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp)) {
-            Quiet("My profile", { go("https://www.linkedin.com/in/me/") })
-            Quiet("Messages", { go("https://www.linkedin.com/messaging/") })
-            Quiet("Sent invites", { go("https://www.linkedin.com/mynetwork/invitation-manager/sent/") })
-            Quiet("Connections", { go("https://www.linkedin.com/mynetwork/invite-connect/connections/") })
-            Quiet("Wellfound", { go("https://wellfound.com/jobs") })
-            Quiet("YC jobs", { go("https://www.ycombinator.com/jobs") })
-            Quiet("HN jobs", { go("https://news.ycombinator.com/jobs") })
-            Quiet("Hiring posts", { go("https://www.linkedin.com/search/results/content/?keywords=${enc("hiring $role email resume")}&sortBy=%22date_posted%22") })
+        val active = activeSite(pageUrl, tag, p.linkedinUrl)
+        val siteScroll = rememberScrollState()
+        Row(Modifier.horizontalScroll(siteScroll).padding(horizontal = 10.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            SiteChip("My profile", active == "profile") { go("https://www.linkedin.com/in/me/") }
+            SiteChip("Messages", active == "messages") { go("https://www.linkedin.com/messaging/") }
+            SiteChip("Sent invites", active == "invites") { go("https://www.linkedin.com/mynetwork/invitation-manager/sent/") }
+            SiteChip("Connections", active == "connections") { go("https://www.linkedin.com/mynetwork/invite-connect/connections/") }
+            SiteChip("Wellfound", active == "wellfound") { go("https://wellfound.com/jobs") }
+            SiteChip("YC jobs", active == "yc") { go("https://www.ycombinator.com/jobs") }
+            SiteChip("HN jobs", active == "hn") { go("https://news.ycombinator.com/jobs") }
+            SiteChip("Hiring posts", active == "posts") { go("https://www.linkedin.com/search/results/content/?keywords=${enc("hiring $role email resume")}&sortBy=%22date_posted%22") }
             if (target != null) {
                 val base = "https://www.linkedin.com/search/results/people/?keywords="
-                Quiet("Same role", { go(base + enc(target.company + " " + role)) })
-                if (p.college.isNotBlank()) Quiet("Alumni", { go(base + enc(target.company + " " + p.college), "alumni") })
-                p.pastCompanyList().firstOrNull()?.let { pc -> Quiet("Ex-colleagues", { go(base + enc(target.company + " " + pc), "colleague") }) }
-                Quiet("Recruiters", { go(base + enc(target.company + " recruiter"), "recruiter") })
+                SiteChip("Same role", active == "people:") { go(base + enc(target.company + " " + role)) }
+                if (p.college.isNotBlank()) SiteChip("Alumni", active == "people:alumni") { go(base + enc(target.company + " " + p.college), "alumni") }
+                p.pastCompanyList().firstOrNull()?.let { pc -> SiteChip("Ex-colleagues", active == "people:colleague") { go(base + enc(target.company + " " + pc), "colleague") } }
+                SiteChip("Recruiters", active == "people:recruiter") { go(base + enc(target.company + " recruiter"), "recruiter") }
+            }
+            if (active == "other" && pageUrl.isNotBlank()) SiteChip(hostOf(pageUrl), true) {}
+        }
+        if (sessionContact != null) {
+            val invite = sessionContact.stage == Stage.APPROVED
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                Label("Sending ${sessionIndex + 1} of ${session.size}" + if (invite) " · connection request" else " · message")
+                Text(sessionContact.name + if (sessionContact.company.isNotBlank()) ", ${sessionContact.company}" else "",
+                    style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Muted(
+                    if (typedFor == sessionContact.id) "Typed in. Tap Send; the next one opens by itself."
+                    else if (invite) "Tap Connect, then Add a note. The note is typed in for you."
+                    else "Tap Message. The message is typed in for you.",
+                    maxLines = 2,
+                )
+                Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Btn("Sent, next", { vm.sessionSentManually() })
+                    Quiet("Type again", { retype++ })
+                    Quiet("Skip", { vm.sessionSkip() })
+                    Quiet("Stop", { vm.stopSession() })
+                }
             }
         }
-        if (applying != null) {
+        if (sessionContact != null) {
+            // the session strip above takes this space
+        } else if (applying != null) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
                 Label("Applying ${qIndex + 1} of ${queue.size}" + if (applying.tailoredResume.isNotBlank()) " · tailored resume ready" else "")
                 Text("${JobRunner.roleOf(applying)} at ${applying.company}", style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -650,4 +723,41 @@ fun BrowserScreen(vm: AppViewModel, data: AppData, webView: WebView, pickFile: (
             }
         }
     }
+}
+
+
+/** Which shortcut matches the page you're on, so it can be highlighted. */
+private fun activeSite(url: String, tag: String, myProfile: String): String {
+    val u = url.lowercase()
+    return when {
+        u.isBlank() -> ""
+        u.contains("news.ycombinator.com") -> "hn"
+        u.contains("ycombinator.com") -> "yc"
+        u.contains("wellfound.com") || u.contains("angel.co") -> "wellfound"
+        !u.contains("linkedin.com") -> "other"
+        u.contains("/messaging") -> "messages"
+        u.contains("invitation-manager") -> "invites"
+        u.contains("/connections") -> "connections"
+        u.contains("/search/results/content") -> "posts"
+        u.contains("/search/results/people") -> "people:$tag"
+        u.contains("/in/me") || (myProfile.isNotBlank() && Store.sameProfile(u, myProfile)) -> "profile"
+        else -> ""
+    }
+}
+
+private fun hostOf(url: String) = url.substringAfter("://").substringBefore("/").removePrefix("www.").take(28)
+
+@Composable
+private fun SiteChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Text(
+        text, maxLines = 1, fontSize = 14.sp,
+        color = if (selected) cs.onPrimary else cs.onSurfaceVariant,
+        fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.SemiBold else null,
+        modifier = Modifier
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+            .background(if (selected) cs.primary else androidx.compose.ui.graphics.Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+    )
 }
