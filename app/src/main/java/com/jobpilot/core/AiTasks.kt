@@ -185,4 +185,106 @@ object AiTasks {
         Ai.complete(p, "Reply with the single word: ready", "Say ready.", maxTokens = 20)
         return "AI connection works."
     }
+
+    // ---------------- Learn and posts ----------------
+
+    @Serializable internal data class LessonOut(
+        val title: String = "", val summary: String = "", val explanation: String = "",
+        val howItWorks: List<String> = emptyList(), val tradeoffs: List<String> = emptyList(), val useWhen: List<String> = emptyList(),
+        val quiz: List<com.jobpilot.data.QuizQ> = emptyList(), val diagram: com.jobpilot.data.Diagram = com.jobpilot.data.Diagram(),
+    )
+
+    /** Explains a topic in depth for a working engineer, with a 3-question quiz and a small architecture diagram. */
+    suspend fun lesson(d: AppData, base: com.jobpilot.data.Lesson, article: String): com.jobpilot.data.Lesson {
+        val p = d.profile
+        val prompt = buildString {
+            appendLine("Teach one topic to a software engineer with ${p.yearsExperience.ifBlank { "a few" }} years of experience who works with: ${p.skills.take(300)}.")
+            if (article.isNotBlank()) {
+                appendLine("Base everything on this article. Do not add claims it doesn't support.")
+                appendLine("ARTICLE TITLE: ${base.sourceTitle}")
+                appendLine("ARTICLE (${base.sourceSite}):"); appendLine(article.take(10000))
+            } else {
+                appendLine("TOPIC: ${base.title}")
+                appendLine("Explain it accurately and concretely, with a realistic example system.")
+            }
+            appendLine(
+                """
+                Answer with JSON only:
+                {"title": "short plain title",
+                 "summary": "2 sentences: what it is and why it matters",
+                 "explanation": "the core idea in depth, 150-250 words, plain language, one concrete example",
+                 "howItWorks": ["4-6 steps or parts, one sentence each"],
+                 "tradeoffs": ["3-4 costs or limits"],
+                 "useWhen": ["2-3 situations where you'd reach for it, or avoid it"],
+                 "quiz": [{"q": "question that checks understanding, not trivia", "options": ["4 options"], "answer": 0, "why": "one sentence"}],
+                 "diagram": {"title": "short", "nodes": [{"id": "a", "label": "Client"}], "edges": [{"from": "a", "to": "b", "label": "request"}]}}
+                Exactly 3 quiz questions; vary which option is correct. Diagram: 3 to 7 nodes, labels of 1-3 words, edges in the order data flows.
+                """.trimIndent()
+            )
+        }
+        val out = json.decodeFromString<LessonOut>(jsonPart(Ai.complete(p, RULES_LEARN, prompt, maxTokens = 3000)))
+        return base.copy(
+            title = out.title.ifBlank { base.title }, summary = out.summary.ifBlank { base.summary }, explanation = out.explanation,
+            howItWorks = out.howItWorks, tradeoffs = out.tradeoffs, useWhen = out.useWhen,
+            quiz = out.quiz.filter { it.options.size >= 2 && it.answer in it.options.indices }.take(3),
+            diagram = out.diagram.copy(nodes = out.diagram.nodes.take(8)), byAi = true,
+        )
+    }
+
+    private const val RULES_LEARN =
+        "You explain software architecture and engineering news precisely. If you are not sure of a fact, leave it out. " +
+            "Plain words, no hype, no emoji. Output exactly the format asked for and nothing else."
+
+    val POST_FORMATS = listOf(
+        "story" to "A short story: what I learned today and where it fits",
+        "lessons" to "3 things I learned, each with one line of why",
+        "mistake" to "A common mistake people make, and what to do instead",
+        "diagram" to "A post that walks through the attached diagram",
+        "carousel" to "A short intro for a 5-7 slide carousel, plus the slides",
+    )
+
+    @Serializable internal data class PostOut(val text: String = "", val slides: List<com.jobpilot.data.Slide> = emptyList())
+
+    /** A LinkedIn post in the user's voice, built around their own angle. */
+    suspend fun post(d: AppData, l: com.jobpilot.data.Lesson, format: String, tone: String = ""): Pair<String, List<com.jobpilot.data.Slide>> {
+        val p = d.profile
+        val desc = POST_FORMATS.firstOrNull { it.first == format }?.second ?: POST_FORMATS.first().second
+        val prompt = buildString {
+            appendLine("Write a LinkedIn post for ${p.name}, ${p.headline.ifBlank { "a software engineer" }}, about something they learned.")
+            appendLine("FORMAT: $desc")
+            appendLine("TOPIC: ${l.title}")
+            if (l.summary.isNotBlank()) appendLine("SUMMARY: ${l.summary}")
+            if (l.explanation.isNotBlank()) appendLine("EXPLANATION: ${l.explanation.take(2500)}")
+            if (l.howItWorks.isNotEmpty()) appendLine("HOW IT WORKS: " + l.howItWorks.joinToString(" | "))
+            if (l.tradeoffs.isNotEmpty()) appendLine("TRADE-OFFS: " + l.tradeoffs.joinToString(" | "))
+            if (l.sourceUrl.isNotBlank()) appendLine("SOURCE: ${l.sourceSite}, \"${l.sourceTitle}\"")
+            if (l.angle.isNotBlank()) appendLine("THEIR OWN TAKE (build the post around this, in their words where possible): ${l.angle}")
+            if (tone.isNotBlank()) appendLine("EXTRA INSTRUCTIONS: $tone")
+            appendLine(
+                """
+                Rules:
+                - First person, like an engineer telling colleagues. Short paragraphs, varied sentence length, contractions.
+                - The first line makes a specific point in under 120 characters. No question hooks, no "Here's why".
+                - Never claim they built, shipped or did something unless their own take says so.
+                - No emoji, no long dashes, at most 3 hashtags at the very end, no "game-changer", "delve", "unlock", "leverage", "journey", "landscape", "excited to share".
+                - 120-220 words. End with one honest question or observation, not a call to like or follow.
+                - If there's a source, credit it in one plain line ("Read via ...").
+                Answer with JSON only: {"text": "the post", "slides": [{"title": "...", "body": "1-3 short lines"}]}
+                Slides only for the carousel format (5-7 slides: a cover, the idea, how it works, trade-offs, takeaway); otherwise an empty list.
+                """.trimIndent()
+            )
+        }
+        val out = json.decodeFromString<PostOut>(jsonPart(Ai.complete(p, RULES_LEARN, prompt, maxTokens = 2000)))
+        return out.text.trim() to out.slides.take(8)
+    }
+
+    /** No AI key: a plain starting point the user rewrites. */
+    fun postTemplate(l: com.jobpilot.data.Lesson, format: String): String = buildString {
+        appendLine(if (format == "mistake") "A mistake I see a lot with ${l.title.lowercase()}:" else "Today I spent some time on ${l.title.lowercase()}.")
+        appendLine()
+        if (l.summary.isNotBlank()) { appendLine(l.summary.take(300)); appendLine() }
+        if (l.howItWorks.isNotEmpty()) { l.howItWorks.take(3).forEach { appendLine("- $it") }; appendLine() }
+        appendLine(l.angle.ifBlank { "Where it clicked for me: (write one line from your own work)" })
+        if (l.sourceUrl.isNotBlank()) { appendLine(); appendLine("Read via ${l.sourceSite}") }
+    }.trim()
 }

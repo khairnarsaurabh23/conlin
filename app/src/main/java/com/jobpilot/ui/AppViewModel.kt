@@ -46,7 +46,7 @@ import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
-enum class Tab(val title: String) { INBOX("Inbox"), TRACKER("Tracker"), LINKEDIN("Browse"), INSIGHTS("Insights") }
+enum class Tab(val title: String) { INBOX("Inbox"), TRACKER("Tracker"), LINKEDIN("Browse"), LEARN("Learn"), INSIGHTS("Insights") }
 
 data class CapturedPerson(
     val name: String, val headline: String, val url: String, val degree: Int = 0,
@@ -803,4 +803,125 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun fileFor(name: String): File = File(ctx.filesDir, name)
+
+    // ---------------- Learn: a topic a day, and posts from what you learned ----------------
+
+    private suspend fun putLesson(l: com.jobpilot.data.Lesson) =
+        Store.update { d -> d.copy(lessons = (d.lessons.filter { it.id != l.id } + l).takeLast(400)) }
+
+    private suspend fun updateLesson(id: String, f: (com.jobpilot.data.Lesson) -> com.jobpilot.data.Lesson) =
+        Store.update { d -> d.copy(lessons = d.lessons.map { if (it.id == id) f(it) else it }) }
+
+    /** Today's topic, made now if it isn't ready yet. [another] swaps it; [news] forces news or a concept. */
+    fun learnToday(another: Boolean = false, news: Boolean? = null) = launchBusy(if (another) "Finding another topic" else "Finding today's topic") {
+        val d = Store.data
+        val now = System.currentTimeMillis()
+        val current = com.jobpilot.core.Learn.today(d, now)
+        if (current != null && !another) return@launchBusy
+        val skip = d.lessons.filter { it.createdAt > now - 86_400_000L }.map { it.title }.toSet()
+        if (current != null && current.status == com.jobpilot.data.LessonStatus.NEW) updateLesson(current.id) { it.copy(status = com.jobpilot.data.LessonStatus.SKIPPED) }
+        val l = com.jobpilot.core.Learn.make(Store.data, news ?: com.jobpilot.core.Learn.wantNews(Store.data), skip)
+        putLesson(l)
+        Store.update { it.copy(pace = it.pace.copy(lastLearnDay = com.jobpilot.core.Pacer.day(now))) }
+        if (!l.byAi && Store.data.profile.aiConfigured) toast("Couldn't reach the AI, so this one has the basics only. Try Explain again.")
+    }
+
+    fun explainAgain(l: com.jobpilot.data.Lesson) = launchBusy("Explaining") {
+        val article = if (l.sourceUrl.isNotBlank()) runCatching {
+            com.jobpilot.net.LinkedInJobs.htmlToText(com.jobpilot.net.Http.get(l.sourceUrl)).take(12000)
+        }.getOrDefault(l.summary) else ""
+        putLesson(AiTasks.lesson(Store.data, l, article))
+    }
+
+    fun skipLesson(id: String) = edit { updateLesson(id) { it.copy(status = com.jobpilot.data.LessonStatus.SKIPPED) } }
+
+    /** After the quiz (or without one). Schedules the first review. */
+    fun markLearned(id: String, score: Int) = edit {
+        val now = System.currentTimeMillis()
+        updateLesson(id) {
+            it.copy(
+                status = if (it.status == com.jobpilot.data.LessonStatus.NEW || it.status == com.jobpilot.data.LessonStatus.SKIPPED) com.jobpilot.data.LessonStatus.LEARNED else it.status,
+                score = score, learnedAt = now, reviewStep = 0, nextReviewAt = com.jobpilot.core.Learn.nextReview(0, now),
+            )
+        }
+        toast("Marked learned. A short review comes back in 3 days.")
+    }
+
+    fun reviewDone(id: String, score: Int) = edit {
+        val now = System.currentTimeMillis()
+        updateLesson(id) {
+            val passed = it.quiz.isEmpty() || score * 3 >= it.quiz.size * 2
+            val step = if (passed) it.reviewStep + 1 else 0
+            it.copy(reviewStep = step, nextReviewAt = com.jobpilot.core.Learn.nextReview(step, now), score = score)
+        }
+    }
+
+    fun draftPost(id: String, angle: String, format: String, tone: String = "") {
+        val l0 = Store.data.lessons.firstOrNull { it.id == id } ?: return
+        val l = l0.copy(angle = angle, format = format)
+        if (!Store.data.profile.aiConfigured) {
+            edit { putLesson(l.copy(postText = AiTasks.postTemplate(l, format), status = com.jobpilot.data.LessonStatus.POST_READY)) }
+            toast("Add an AI key in Settings for a full draft. This one is a starting point to rewrite.")
+            return
+        }
+        launchBusy("Writing the post") {
+            val (text, slides) = AiTasks.post(Store.data, l, format, tone)
+            putLesson(l.copy(postText = text, slides = slides, status = com.jobpilot.data.LessonStatus.POST_READY))
+        }
+    }
+
+    fun savePost(id: String, text: String) = edit { updateLesson(id) { it.copy(postText = text) } }
+
+    /** Opens LinkedIn's composer with the post (and image or PDF). You review and tap Post there. */
+    fun sharePost(l: com.jobpilot.data.Lesson) {
+        val name = Store.data.profile.name
+        val file = when {
+            l.format == "carousel" -> com.jobpilot.core.PostMedia.carouselPdf(ctx, l, l.slides, name)
+            !l.diagram.isEmpty && l.format == "diagram" -> com.jobpilot.core.PostMedia.savePng(ctx, l, name)
+            else -> null
+        }
+        val clip = ctx.getSystemService(android.content.ClipboardManager::class.java)
+        clip?.setPrimaryClip(android.content.ClipData.newPlainText("post", l.postText))
+        val pdf = file?.extension == "pdf"
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            putExtra(android.content.Intent.EXTRA_TEXT, l.postText)
+            if (file != null) {
+                val uri = androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".files", file)
+                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                type = if (pdf) "application/pdf" else "image/png"
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } else type = "text/plain"
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val li = android.content.Intent(send).setPackage("com.linkedin.android")
+        try {
+            if (pdf) ctx.startActivity(android.content.Intent.createChooser(send, "Share the carousel").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+            else ctx.startActivity(li)
+        } catch (_: android.content.ActivityNotFoundException) {
+            if (file == null) {
+                openInBrowse("https://www.linkedin.com/feed/?shareActive=true&text=" + java.net.URLEncoder.encode(l.postText, "UTF-8"))
+                return
+            }
+            ctx.startActivity(android.content.Intent.createChooser(send, "Share the post").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+        toast(
+            if (pdf) "Text copied. Pick LinkedIn, or save the PDF and use Add a document in a new post, then paste the text."
+            else "Text copied too, in case LinkedIn drops it. Review and tap Post there."
+        )
+    }
+
+    fun markPosted(id: String, url: String) = edit {
+        updateLesson(id) { it.copy(status = com.jobpilot.data.LessonStatus.POSTED, postedAt = System.currentTimeMillis(), postUrl = url.trim()) }
+        toast("Logged. Add views and reactions in a few days to see what works.")
+    }
+
+    fun setPostStats(id: String, views: Int, reactions: Int) = edit { updateLesson(id) { it.copy(views = views, reactions = reactions) } }
+
+    fun diagramBitmap(l: com.jobpilot.data.Lesson) = com.jobpilot.core.PostMedia.diagram(l.diagram, l.title, Store.data.profile.name, 900, 900)
+
+    /** Opens a page in the Browse tab. */
+    fun openInBrowse(url: String) {
+        _browserJob.value = null; _browserTag.value = ""
+        _browserUrl.value = url; _openJob.value = null; _tab.value = Tab.LINKEDIN
+    }
 }

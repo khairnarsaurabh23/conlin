@@ -82,6 +82,15 @@ data class Profile(
     /** Remind to follow up on an application after this many days without a reply. */
     val appFollowDays: Int = 7,
 
+    // Learn: one topic a day, and LinkedIn posts drafted from what you learned.
+    val learnEnabled: Boolean = true,
+    val learnTime: String = "09:00",
+    val postsPerWeek: Int = 3,
+    /** Extra topics you want to learn about, comma separated. */
+    val learnInterests: String = "",
+    /** RSS or Atom feeds to pick news from, one per line. Blank means the built-in list. */
+    val learnFeeds: String = "",
+
     // Background checks
     val autoCheckEnabled: Boolean = true,
     val autoCheckHours: Int = 12,
@@ -472,6 +481,7 @@ data class AppData(
     val connections: List<Connection> = emptyList(),
     val connectionsImportedAt: Long = 0,
     val pace: PaceState = PaceState(),
+    val lessons: List<Lesson> = emptyList(),
 )
 
 @Serializable
@@ -491,4 +501,60 @@ data class PaceState(
     val lastEmailAt: Long = 0,
     /** yyyyMMdd of the last daily send-session reminder. */
     val lastReminderDay: String = "",
+    val lastLearnDay: String = "",
+)
+
+enum class LessonStatus { NEW, LEARNED, POST_READY, POSTED, SKIPPED }
+
+@Serializable
+data class QuizQ(val q: String, val options: List<String> = emptyList(), val answer: Int = 0, val why: String = "")
+
+@Serializable
+data class DNode(val id: String, val label: String)
+
+@Serializable
+data class DEdge(val from: String, val to: String, val label: String = "")
+
+@Serializable
+data class Diagram(val title: String = "", val nodes: List<DNode> = emptyList(), val edges: List<DEdge> = emptyList()) {
+    val isEmpty: Boolean get() = nodes.size < 2
+}
+
+@Serializable
+data class Slide(val title: String, val body: String = "")
+
+@Serializable
+data class Lesson(
+    val id: String,
+    val createdAt: Long = 0,
+    /** "news" (from an article) or "concept" (system design, architecture). */
+    val kind: String = "concept",
+    val title: String,
+    val sourceTitle: String = "",
+    val sourceUrl: String = "",
+    val sourceSite: String = "",
+    val summary: String = "",
+    val explanation: String = "",
+    val howItWorks: List<String> = emptyList(),
+    val tradeoffs: List<String> = emptyList(),
+    val useWhen: List<String> = emptyList(),
+    val quiz: List<QuizQ> = emptyList(),
+    val diagram: Diagram = Diagram(),
+    /** Why it was picked, e.g. "Kafka is in 6 of your saved jobs". */
+    val why: String = "",
+    val byAi: Boolean = false,
+    val status: LessonStatus = LessonStatus.NEW,
+    val score: Int = -1,
+    val learnedAt: Long = 0,
+    val reviewStep: Int = 0,
+    val nextReviewAt: Long = 0,
+    // The post
+    val angle: String = "",
+    val format: String = "",
+    val postText: String = "",
+    val slides: List<Slide> = emptyList(),
+    val postedAt: Long = 0,
+    val postUrl: String = "",
+    val views: Int = 0,
+    val reactions: Int = 0,
 )

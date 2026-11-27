@@ -160,6 +160,30 @@ fun SettingsScreen(vm: AppViewModel, data: AppData, snack: SnackbarHostState) {
                 }
             }
 
+            SectionTitle("Learn and post")
+            Toggle(
+                "A new topic every day", p.learnEnabled,
+                "System design concepts matched to your saved jobs, alternating with engineering news. Mark it learned, then turn it into a LinkedIn post you review and share.",
+            ) { p = p.copy(learnEnabled = it) }
+            if (p.learnEnabled) {
+                val lctx = androidx.compose.ui.platform.LocalContext.current
+                val lt = Regex("^(\\d{1,2})[:.](\\d{2})$").find(p.learnTime.trim())
+                val lh = lt?.groupValues?.get(1)?.toIntOrNull() ?: 9
+                val lm = lt?.groupValues?.get(2)?.toIntOrNull() ?: 0
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Topic arrives at", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    Btn(String.format(java.util.Locale.US, "%d:%02d %s", if (lh % 12 == 0) 12 else lh % 12, lm, if (lh < 12) "AM" else "PM"), {
+                        android.app.TimePickerDialog(lctx, { _, h, m ->
+                            p = p.copy(learnTime = String.format(java.util.Locale.US, "%02d:%02d", h, m))
+                        }, lh, lm, false).show()
+                    })
+                }
+            }
+            NumField("Posts per week to aim for", p.postsPerWeek) { p = p.copy(postsPerWeek = it.coerceIn(1, 7)) }
+            Field("Also interested in (comma separated)", p.learnInterests) { p = p.copy(learnInterests = it) }
+            Field("News feeds, one per line (blank: built-in list)", p.learnFeeds, lines = 3) { p = p.copy(learnFeeds = it) }
+            Muted("Built in: ByteByteGo, Netflix, Cloudflare, AWS Architecture, Martin Fowler, Pragmatic Engineer, Dropbox, Slack, Stripe, InfoQ, Meta and GitHub engineering, plus Hacker News.")
+
             SectionTitle("People you already know")
             Muted(
                 if (data.connections.isEmpty()) "Import your LinkedIn connections and jobs at companies where you know someone are flagged, with a referral message ready. On LinkedIn: Settings > Data privacy > Get a copy of your data > Connections. The email arrives in about 10 minutes; pick Connections.csv from the download."

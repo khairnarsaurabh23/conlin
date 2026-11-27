@@ -73,6 +73,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(i: Intent?) {
+        if (i != null && i.getBooleanExtra(com.jobpilot.work.LearnReminder.EXTRA_LEARN, false)) {
+            i.removeExtra(com.jobpilot.work.LearnReminder.EXTRA_LEARN)
+            vm.setTab(com.jobpilot.ui.Tab.LEARN)
+            return
+        }
         if (i != null && i.getBooleanExtra(com.jobpilot.work.SendSession.EXTRA_START, false)) {
             i.removeExtra(com.jobpilot.work.SendSession.EXTRA_START)
             vm.startSession()

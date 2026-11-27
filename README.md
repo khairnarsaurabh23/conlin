@@ -27,6 +27,14 @@ Approved emails can drip out by themselves, one every 30 minutes within hours yo
 
 The Browse shortcuts highlight the site you're on (or show its name if it isn't one of them).
 
+## Learn and post (3.2)
+
+The Learn tab gives you one topic a day at a time you pick (9:00 by default). It alternates between system design concepts, ranked by what your saved jobs ask for ("Kafka is in 6 of your saved jobs"), and engineering news from ByteByteGo, Netflix, Cloudflare, AWS Architecture, Martin Fowler and others, plus Hacker News. With your AI key it explains the topic in depth (how it works, trade-offs, when to use it), draws a diagram and asks 3 questions. Mark it learned and it comes back for a short review after 3, 7 and 30 days.
+
+Learned topics become LinkedIn posts: add one line of your own take, pick a format (story, 3 lessons, common mistake, diagram, carousel) and JobPilot drafts it. It flags phrases that read as AI-written, too many hashtags or emoji, and a first line too long for the preview. Share opens LinkedIn with the text and the diagram image (or the carousel PDF); you review and tap Post. Log the post and add views later to see which formats work for you. It suggests a pace (3 a week by default) so you learn daily but post your best.
+
+No extra keys: the feeds are public, and the AI key you already have does the writing. Without it you still get the daily topic, the source and a plain post template.
+
 ## Ideas taken from career-ops
 
 - **Is it still open?** Kept jobs are rechecked every two days; postings that say "no longer accepting applications" or have gone are flagged and moved out of the Apply list.

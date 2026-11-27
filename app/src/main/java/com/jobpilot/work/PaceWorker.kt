@@ -25,9 +25,6 @@ import com.jobpilot.R
 import com.jobpilot.core.Mailer
 import com.jobpilot.core.Pacer
 import com.jobpilot.data.Store
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
 /**
@@ -38,6 +35,7 @@ class PaceWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
     override suspend fun doWork(): Result {
         Store.init(applicationContext)
         SendSession.remindIfDue(applicationContext)
+        runCatching { LearnReminder.runIfDue(applicationContext) }
         SendSession.scheduleAlarm(applicationContext)
         val now = System.currentTimeMillis()
         if (Pacer.emailDue(Store.data, now)) {
@@ -64,16 +62,12 @@ class PaceWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
 /** Fires at the reminder time you set. */
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val pending = goAsync()
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                Store.init(context.applicationContext)
-                SendSession.remindIfDue(context.applicationContext)
-                SendSession.scheduleAlarm(context.applicationContext)
-            } finally {
-                pending.finish()
-            }
-        }
+        // Preparing today's topic can take a while (fetching, AI), so hand it to a worker.
+        WorkManager.getInstance(context).enqueue(
+            androidx.work.OneTimeWorkRequestBuilder<PaceWorker>()
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .build()
+        )
     }
 }
 
@@ -99,11 +93,21 @@ object SendSession {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val p = Store.data.profile
-        if (!p.paceEnabled) { am.cancel(pi); return }
         val now = System.currentTimeMillis()
-        var at = Pacer.sessionAt(p, now)
-        if (at <= now) at = Pacer.sessionAt(p, now + TimeUnit.DAYS.toMillis(1))
-        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        if (!p.paceEnabled) am.cancel(pi) else {
+            var at = Pacer.sessionAt(p, now)
+            if (at <= now) at = Pacer.sessionAt(p, now + TimeUnit.DAYS.toMillis(1))
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        }
+        val learnPi = PendingIntent.getBroadcast(
+            context, 4, Intent(context, ReminderReceiver::class.java).setAction("learn"),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        if (!p.learnEnabled) am.cancel(learnPi) else {
+            var at = com.jobpilot.core.Learn.learnAt(Store.data, now)
+            if (at <= now) at = com.jobpilot.core.Learn.learnAt(Store.data, now + TimeUnit.DAYS.toMillis(1))
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, learnPi)
+        }
     }
 
     private fun notify(context: Context, ready: Int) {
@@ -130,6 +134,56 @@ object SendSession {
             .build()
         try {
             NotificationManagerCompat.from(context).notify(1002, n)
+        } catch (_: SecurityException) {
+        }
+    }
+}
+
+/** The daily topic: prepared in the background, then one notification. */
+object LearnReminder {
+    private const val CHANNEL = "jobpilot-learn"
+    const val EXTRA_LEARN = "open_learn"
+
+    suspend fun runIfDue(context: Context) {
+        val now = System.currentTimeMillis()
+        val d = Store.data
+        if (!com.jobpilot.core.Learn.due(d, now)) return
+        val lesson = com.jobpilot.core.Learn.today(d, now)
+            ?: com.jobpilot.core.Learn.make(d, com.jobpilot.core.Learn.wantNews(d)).also { l ->
+                Store.update { s -> s.copy(lessons = (s.lessons + l).takeLast(400)) }
+            }
+        Store.update { it.copy(pace = it.pace.copy(lastLearnDay = Pacer.day(now))) }
+        val ready = Store.data.lessons.count { it.status == com.jobpilot.data.LessonStatus.POST_READY }
+        val reviews = com.jobpilot.core.Learn.reviewsDue(Store.data, now).size
+        val extra = listOfNotNull(
+            if (reviews > 0) "$reviews to review" else null,
+            if (ready > 0) "$ready post${if (ready == 1) "" else "s"} ready to share" else null,
+        ).joinToString(", ")
+        notify(context, "Today: ${lesson.title}", lesson.summary.take(140).ifBlank { lesson.why } + if (extra.isNotBlank()) "\n$extra" else "")
+    }
+
+    private fun notify(context: Context, title: String, text: String) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+        val nm = context.getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Daily learning", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            description = "Today's topic, reviews and posts ready to share"
+        })
+        val intent = Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            .putExtra(EXTRA_LEARN, true)
+        val pi = PendingIntent.getActivity(context, 5, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = NotificationCompat.Builder(context, CHANNEL)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(title.take(90))
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        try {
+            NotificationManagerCompat.from(context).notify(1003, n)
         } catch (_: SecurityException) {
         }
     }

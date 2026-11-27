@@ -94,6 +94,7 @@ fun AppRoot(vm: AppViewModel, webView: WebView, pickFile: ((android.net.Uri?) ->
                 Tab.INBOX -> InboxScreen(vm, data, busy != null)
                 Tab.TRACKER -> TrackerScreen(vm, data)
                 Tab.LINKEDIN -> BrowserScreen(vm, data, webView, pickFile)
+                Tab.LEARN -> LearnScreen(vm, data, busy != null)
                 Tab.INSIGHTS -> InsightsScreen(vm, data)
             }
         }
